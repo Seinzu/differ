@@ -29,7 +29,8 @@ The default comparison is `HEAD~1` to `HEAD`. A repository with only one commit 
 - **Total diff:** directly compares the base snapshot to the head snapshot (`git diff BASE HEAD`). It does not substitute the merge base. Reversed and divergent comparisons work.
 - **Commit by commit:** available when either commit is an ancestor of the other. Includes commits reachable from the newer commit but not the older one, in parent-before-child order. The older endpoint is excluded. Reversed comparisons still list commits oldest to newest.
 - Each commit is compared with its **first parent**. Merge commits can therefore repeat changes also visible in the merged branch's commits. A root commit introduced by an unrelated-history merge is compared with an empty tree.
-- Side-by-side line alignment, line numbers, syntax highlighting, inline changed spans, rename detection, file statistics, and missing-final-newline indicators.
+- Switch between **Split** (side-by-side) and **Unified** diffs in the toolbar. Unified mode shows each unchanged line once, with deletions followed by additions and separate old/new line numbers. The selected layout is remembered in your browser and applies to both total and commit-by-commit review.
+- Both layouts include syntax highlighting, inline changed spans, rename detection, file statistics, and missing-final-newline indicators.
 - Filter files, collapse diffs, mark files viewed, hide viewed files, ignore whitespace, wrap long lines, or show more context. Viewed state is stored in the browser per repository and resolved SHA pair.
 - Stats describe the original comparison, even when whitespace is ignored. Binary files and submodule changes show metadata instead of a text preview.
 - Files load as they approach the viewport. Text previews are limited to 2 MB per blob, 4 MB per patch, and 10,000 patch lines. Larger files show an explicit notice. Individual Git commands have a 30-second timeout and 32 MB output limit.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changedSpan, parsePatch } from "./diff";
+import { changedSpan, parsePatch, toUnifiedRows } from "./diff";
 
 describe("side-by-side patch parsing", () => {
   it("aligns replacement blocks of different lengths and retains line numbers", () => {
@@ -37,5 +37,77 @@ describe("side-by-side patch parsing", () => {
     ]);
     expect(changedSpan("same", "same")).toBeNull();
     expect(changedSpan("aaa", "a")).toEqual([1, 3, 1]);
+  });
+});
+
+describe("unified diff rows", () => {
+  it("renders complete deletion blocks before additions, with context shown once", () => {
+    const [hunk] = parsePatch(
+      "@@ -8,4 +8,5 @@\n context\n-old\n-removed\n+new\n+extra\n+third\n tail\n",
+    );
+    const rows = toUnifiedRows(hunk.rows);
+    expect(
+      rows.map((row) => [
+        row.kind,
+        row.line.text,
+        row.oldNumber,
+        row.newNumber,
+      ]),
+    ).toEqual([
+      ["context", "context", 8, 8],
+      ["deletion", "old", 9, undefined],
+      ["deletion", "removed", 10, undefined],
+      ["addition", "new", undefined, 9],
+      ["addition", "extra", undefined, 10],
+      ["addition", "third", undefined, 11],
+      ["context", "tail", 11, 12],
+    ]);
+    expect(rows[1].other?.text).toBe("new");
+    expect(rows[3].other?.text).toBe("old");
+    expect(rows[5].other).toBeUndefined();
+  });
+
+  it("keeps separate change blocks in place and preserves EOF markers", () => {
+    const [hunk] = parsePatch(
+      "@@ -1,3 +1,3 @@\n-before\n+after\n unchanged\n-old end\n\\ No newline at end of file\n+new end\n",
+    );
+    const rows = toUnifiedRows(hunk.rows);
+    expect(rows.map((row) => row.line.text)).toEqual([
+      "before",
+      "after",
+      "unchanged",
+      "old end",
+      "new end",
+    ]);
+    expect(rows[3].line.noNewline).toBe(true);
+    expect(rows[4].line.noNewline).toBeUndefined();
+    expect(rows[2]).toMatchObject({
+      kind: "context",
+      oldNumber: 2,
+      newNumber: 2,
+    });
+  });
+
+  it("handles added and deleted files, blank lines, and multiple hunks", () => {
+    const [added] = parsePatch("@@ -0,0 +1,2 @@\n+\n+value\n");
+    expect(
+      toUnifiedRows(added.rows).map((row) => [
+        row.kind,
+        row.line.text,
+        row.oldNumber,
+        row.newNumber,
+      ]),
+    ).toEqual([
+      ["addition", "", undefined, 1],
+      ["addition", "value", undefined, 2],
+    ]);
+    const hunks = parsePatch(
+      "@@ -1 +0,0 @@\n-gone\n@@ -10 +8,0 @@\n-also gone\n",
+    );
+    expect(hunks.map((hunk) => toUnifiedRows(hunk.rows)[0])).toMatchObject([
+      { kind: "deletion", oldNumber: 1, line: { text: "gone" } },
+      { kind: "deletion", oldNumber: 10, line: { text: "also gone" } },
+    ]);
+    expect(toUnifiedRows([])).toEqual([]);
   });
 });

@@ -13,6 +13,58 @@ export interface Hunk {
   rows: Row[];
 }
 
+export interface UnifiedRow {
+  kind: "context" | "deletion" | "addition";
+  line: Line;
+  oldNumber?: number;
+  newNumber?: number;
+  other?: Line;
+}
+
+/** Keep each change block in patch order: all deletions, then all additions. */
+export function toUnifiedRows(rows: Row[]): UnifiedRow[] {
+  const result: UnifiedRow[] = [];
+  let changes: Row[] = [];
+  function flush() {
+    for (const row of changes) {
+      if (row.left)
+        result.push({
+          kind: "deletion",
+          line: row.left,
+          oldNumber: row.left.number,
+          other: row.right,
+        });
+    }
+    for (const row of changes) {
+      if (row.right)
+        result.push({
+          kind: "addition",
+          line: row.right,
+          newNumber: row.right.number,
+          other: row.left,
+        });
+    }
+    changes = [];
+  }
+  for (const row of rows) {
+    if (row.kind === "change") {
+      changes.push(row);
+    } else {
+      flush();
+      const line = row.right ?? row.left;
+      if (line)
+        result.push({
+          kind: "context",
+          line,
+          oldNumber: row.left?.number,
+          newNumber: row.right?.number,
+        });
+    }
+  }
+  flush();
+  return result;
+}
+
 /** Align each contiguous deletion/addition group, preserving blank lines and EOF markers. */
 export function parsePatch(patch: string): Hunk[] {
   const hunks: Hunk[] = [];

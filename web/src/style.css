@@ -359,6 +359,7 @@ main {
 }
 .review-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 18px;
   padding: 20px 0 18px;
@@ -420,6 +421,36 @@ main {
 }
 .settings {
   position: relative;
+}
+.diff-view-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+.diff-view-switch button {
+  border: 0;
+  background: transparent;
+  color: #63717c;
+  min-height: 28px;
+  padding: 6px 10px;
+  font-size: 11px;
+}
+.diff-view-switch button:first-child {
+  border-radius: 5px 0 0 5px;
+}
+.diff-view-switch button:last-child {
+  border-left: 1px solid var(--border);
+  border-radius: 0 5px 5px 0;
+}
+.diff-view-switch button:hover {
+  background: #f4f6f8;
+}
+.diff-view-switch button[aria-pressed="true"] {
+  background: #edf4ef;
+  color: #2d6549;
+  font-weight: 600;
 }
 .settings summary {
   list-style: none;
@@ -666,7 +697,8 @@ main {
   white-space: pre;
   overflow: hidden;
 }
-.diff-half:focus-visible {
+.diff-half:focus-visible,
+.unified-diff:focus-visible {
   outline: 2px solid #4388dd;
   outline-offset: -2px;
 }
@@ -703,6 +735,13 @@ main {
   float: right;
   font-size: 9px;
   color: #8f9aa5;
+}
+.unified-table thead th:nth-child(-n + 2) {
+  padding: 7px 4px;
+  text-align: right;
+}
+.unified-table .line-number:nth-child(2) {
+  border-right: 1px solid #d9e0e6;
 }
 .line-number {
   user-select: none;

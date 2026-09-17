@@ -24,8 +24,10 @@ import {
 } from "lucide-react";
 import hljs from "highlight.js/lib/common";
 import type { ChangedFile, Comparison, Config, Patch } from "./types";
-import { changedSpan, parsePatch, type Line } from "./diff";
+import { changedSpan, parsePatch, toUnifiedRows, type Line } from "./diff";
 import "./style.css";
+
+type DiffLayout = "split" | "unified";
 
 const short = (sha: string) =>
   sha === ":empty" ? "empty tree" : sha.slice(0, 7);
@@ -88,6 +90,15 @@ function App() {
   const [context, setContext] = useState("3");
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [wrap, setWrap] = useState(false);
+  const [diffLayout, setDiffLayout] = useState<DiffLayout>(() => {
+    try {
+      return localStorage.getItem("differ:diff-layout") === "unified"
+        ? "unified"
+        : "split";
+    } catch {
+      return "split";
+    }
+  });
   const [reviewed, setReviewed] = useState<Set<string>>(new Set());
   const [hideViewed, setHideViewed] = useState(false);
   const [activePath, setActivePath] = useState("");
@@ -110,6 +121,14 @@ function App() {
       // The toggle still works when browser storage is unavailable.
     }
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("differ:diff-layout", diffLayout);
+    } catch {
+      // Layout selection still works when browser storage is unavailable.
+    }
+  }, [diffLayout]);
 
   async function compare(config: Config) {
     request.current?.abort();
@@ -502,6 +521,27 @@ function App() {
                   aria-label="Files reviewed"
                 />
               </div>
+              <div
+                className="diff-view-switch"
+                role="group"
+                aria-label="Diff view"
+              >
+                <button
+                  type="button"
+                  aria-pressed={diffLayout === "split"}
+                  title="Side-by-side diff"
+                  onClick={() => setDiffLayout("split")}
+                >
+                  Split
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={diffLayout === "unified"}
+                  onClick={() => setDiffLayout("unified")}
+                >
+                  Unified
+                </button>
+              </div>
               <details className="settings">
                 <summary className="button subtle">
                   <Settings2 size={15} />
@@ -622,6 +662,7 @@ function App() {
                         context={context}
                         ignoreWhitespace={ignoreWhitespace}
                         wrap={wrap}
+                        layout={diffLayout}
                         viewed={reviewed.has(file.path)}
                         onViewed={() => toggleViewed(file.path)}
                       />
@@ -736,12 +777,14 @@ function CodeCell({
   side,
   changed,
   language,
+  lineNumbers,
 }: {
   line?: Line;
   other?: Line;
   side: "left" | "right";
   changed: boolean;
   language?: string;
+  lineNumbers?: { old?: number; new?: number };
 }) {
   const kind = line
     ? changed
@@ -759,16 +802,41 @@ function CodeCell({
   const end = range?.[side === "left" ? 1 : 2];
   return (
     <>
-      <td
-        className={`line-number ${kind}`}
-        aria-label={
-          line
-            ? `${side === "left" ? "Old" : "New"} line ${line.number}`
-            : undefined
-        }
-      >
-        {line?.number}
-      </td>
+      {lineNumbers ? (
+        <>
+          <td
+            className={`line-number ${kind}`}
+            aria-label={
+              lineNumbers.old !== undefined
+                ? `Old line ${lineNumbers.old}`
+                : undefined
+            }
+          >
+            {lineNumbers.old}
+          </td>
+          <td
+            className={`line-number ${kind}`}
+            aria-label={
+              lineNumbers.new !== undefined
+                ? `New line ${lineNumbers.new}`
+                : undefined
+            }
+          >
+            {lineNumbers.new}
+          </td>
+        </>
+      ) : (
+        <td
+          className={`line-number ${kind}`}
+          aria-label={
+            line
+              ? `${side === "left" ? "Old" : "New"} line ${line.number}`
+              : undefined
+          }
+        >
+          {line?.number}
+        </td>
+      )}
       <td className={`code-cell ${kind}`}>
         <span className="line-sign" aria-hidden="true">
           {changed && line ? (side === "left" ? "−" : "+") : " "}
@@ -809,6 +877,7 @@ function FileCard({
   context,
   ignoreWhitespace,
   wrap,
+  layout,
   viewed,
   onViewed,
 }: {
@@ -817,6 +886,7 @@ function FileCard({
   context: string;
   ignoreWhitespace: boolean;
   wrap: boolean;
+  layout: DiffLayout;
   viewed: boolean;
   onViewed: () => void;
 }) {
@@ -865,6 +935,16 @@ function FileCard({
     return () => controller.abort();
   }, [visible, comparison, file.path, context, ignoreWhitespace, retry]);
   const hunks = useMemo(() => parsePatch(patch?.patch ?? ""), [patch]);
+  const unifiedHunks = useMemo(
+    () =>
+      layout === "unified"
+        ? hunks.map((hunk) => ({
+            heading: hunk.heading,
+            rows: toUnifiedRows(hunk.rows),
+          }))
+        : [],
+    [hunks, layout],
+  );
   const language = languages[file.path.split(".").pop() || ""];
   const longestLine = useMemo(
     () =>
@@ -936,6 +1016,62 @@ function FileCard({
             <div className="patch-message">
               <LoaderCircle size={16} className="spin" />
               Loading diff…
+            </div>
+          ) : hunks.length && layout === "unified" ? (
+            <div
+              className={`diff-scroll unified-diff ${wrap ? "wrap-lines" : ""}`}
+              tabIndex={0}
+              aria-label="Unified code, scroll horizontally for long lines"
+            >
+              <table
+                className="diff-table unified-table"
+                style={{
+                  minWidth: wrap ? 0 : Math.max(310, longestLine * 7.2 + 118),
+                }}
+                aria-label={`Unified diff for ${file.path}`}
+              >
+                <colgroup>
+                  <col className="number-col" />
+                  <col className="number-col" />
+                  <col />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th scope="col">Old</th>
+                    <th scope="col">New</th>
+                    <th scope="col">
+                      Changes{" "}
+                      <code>
+                        {short(comparison.base)} → {short(comparison.head)}
+                      </code>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unifiedHunks.map((hunk, index) => (
+                    <React.Fragment key={index}>
+                      <tr className="hunk-header">
+                        <td colSpan={3}>{hunk.heading}</td>
+                      </tr>
+                      {hunk.rows.map((row, rowIndex) => (
+                        <tr key={rowIndex}>
+                          <CodeCell
+                            line={row.line}
+                            other={row.other}
+                            side={row.kind === "deletion" ? "left" : "right"}
+                            changed={row.kind !== "context"}
+                            language={language}
+                            lineNumbers={{
+                              old: row.oldNumber,
+                              new: row.newNumber,
+                            }}
+                          />
+                        </tr>
+                      ))}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
             </div>
           ) : hunks.length && !wrap ? (
             <div
