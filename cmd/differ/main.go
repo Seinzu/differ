@@ -48,6 +48,12 @@ func main() {
 		log.Fatal(err)
 	}
 	srv := &http.Server{Addr: *addr, Handler: server.New(server.Config{Repository: root, Base: *base, Head: *head}, assets), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	listener, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		log.Fatalf("Could not start Differ on %s: %v", srv.Addr, err)
+	}
+	defer listener.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -56,8 +62,8 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
-	fmt.Printf("Differ is ready at http://%s\nRepository: %s\n", *addr, root)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	fmt.Printf("Differ is ready at http://%s\nRepository: %s\n", listener.Addr(), root)
+	if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
