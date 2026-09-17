@@ -363,6 +363,13 @@ main {
   gap: 18px;
   padding: 20px 0 18px;
 }
+.file-tree-toggle {
+  flex-shrink: 0;
+  width: 32px;
+  min-height: 30px;
+  padding: 6px;
+  color: #63717c;
+}
 .change-summary {
   display: flex;
   align-items: center;
@@ -460,6 +467,9 @@ main {
   grid-template-columns: 238px minmax(0, 1fr);
   gap: 23px;
   align-items: start;
+}
+.review-layout.sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
 }
 .file-sidebar {
   position: sticky;

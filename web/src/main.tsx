@@ -16,6 +16,8 @@ import {
   GitCommitHorizontal,
   GitCompareArrows,
   LoaderCircle,
+  PanelLeftClose,
+  PanelLeftOpen,
   Search,
   Settings2,
   X,
@@ -76,6 +78,13 @@ function App() {
   const [commitLoading, setCommitLoading] = useState(false);
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("differ:sidebar-collapsed") === "true";
+    } catch {
+      return false;
+    }
+  });
   const [context, setContext] = useState("3");
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [wrap, setWrap] = useState(false);
@@ -90,6 +99,17 @@ function App() {
   const reviewKey = active
     ? `differ:review:${active.repository}:${active.base}:${active.head}`
     : "";
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        "differ:sidebar-collapsed",
+        String(sidebarCollapsed),
+      );
+    } catch {
+      // The toggle still works when browser storage is unavailable.
+    }
+  }, [sidebarCollapsed]);
 
   async function compare(config: Config) {
     request.current?.abort();
@@ -444,6 +464,23 @@ function App() {
               </div>
             )}
             <div className="review-toolbar">
+              <button
+                type="button"
+                className="button subtle file-tree-toggle"
+                aria-label={
+                  sidebarCollapsed ? "Show file tree" : "Hide file tree"
+                }
+                title={sidebarCollapsed ? "Show file tree" : "Hide file tree"}
+                aria-expanded={!sidebarCollapsed}
+                aria-controls="changed-files-sidebar"
+                onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen size={16} />
+                ) : (
+                  <PanelLeftClose size={16} />
+                )}
+              </button>
               <div className="change-summary">
                 <strong>
                   {files.length} changed {files.length === 1 ? "file" : "files"}
@@ -517,8 +554,14 @@ function App() {
                 Loading commit…
               </div>
             ) : (
-              <div className="review-layout">
-                <aside className="file-sidebar">
+              <div
+                className={`review-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
+              >
+                <aside
+                  id="changed-files-sidebar"
+                  className="file-sidebar"
+                  hidden={sidebarCollapsed}
+                >
                   <div className="file-filter">
                     <Search size={15} />
                     <input
