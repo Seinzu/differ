@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -28,7 +29,6 @@ jobs:
         shell: bash
     env:
       RELEASE_TAG: ${{ inputs.tag }}
-      DIST_DIR: ${{ runner.temp }}/differ-release
 
     steps:
       - name: Check out the selected revision
@@ -36,6 +36,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Set the release output directory
+        run: printf 'DIST_DIR=%s/differ-release\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Validate the new release tag
         run: |
