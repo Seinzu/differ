@@ -1,0 +1,107 @@
+name: Release macOS (Apple Silicon)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "New release tag (for example, v0.1.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark this as a prerelease"
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      DIST_DIR: ${{ runner.temp }}/differ-release
+
+    steps:
+      - name: Check out the selected revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate the new release tag
+        run: |
+          if [[ "$RELEASE_TAG" == -* ]] || ! git check-ref-format "refs/tags/$RELEASE_TAG"; then
+            echo "Enter a valid Git tag that does not begin with a dash." >&2
+            exit 1
+          fi
+          if git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            echo "That tag already exists. Choose a new tag for this release." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          # The server uses only the standard library, so there is no go.sum.
+          cache: false
+
+      - name: Build and test the frontend
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Test the server
+        run: |
+          go test ./...
+          go vet ./...
+
+      - name: Build for Apple Silicon macOS
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p "$DIST_DIR"
+          go build -trimpath -ldflags="-s -w" -o "$DIST_DIR/differ" ./cmd/differ
+
+      - name: Package the binary and checksum
+        run: |
+          tar -czf "$DIST_DIR/differ-darwin-arm64.tar.gz" \
+            -C "$DIST_DIR" differ -C "$GITHUB_WORKSPACE" README.md
+          cd "$DIST_DIR"
+          sha256sum differ-darwin-arm64.tar.gz > differ-darwin-arm64.tar.gz.sha256
+
+      - name: Create the release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          flags=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            "$DIST_DIR/differ-darwin-arm64.tar.gz" \
+            "$DIST_DIR/differ-darwin-arm64.tar.gz.sha256" \
+            --target "$GITHUB_SHA" \
+            --title "$RELEASE_TAG" \
+            --generate-notes \
+            "${flags[@]}"

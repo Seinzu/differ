@@ -38,6 +38,27 @@ Git remains the source of truth. Differ does not check out commits, modify files
 
 The server binds only to loopback addresses and rejects cross-origin API requests and non-local hostnames. It has access to working copies readable by the user running it. Local links include the working-copy path and only work on a machine with that path and a running Differ server.
 
+## GitHub releases
+
+The **Release macOS (Apple Silicon)** workflow runs only through `workflow_dispatch`; pushes and tags do not trigger it. Once the workflow is on the default branch, open **Actions → Release macOS (Apple Silicon) → Run workflow**, select the branch to build, and enter a new tag such as `v0.1.0`. Optionally mark it as a prerelease.
+
+The workflow builds and tests the frontend and Go server, cross-compiles a `darwin/arm64` binary with the frontend embedded, and creates a release tagging the exact selected commit. Existing tags are rejected. It uses GitHub's built-in token with `contents: write`; no additional secret is needed.
+
+Release assets:
+
+- `differ-darwin-arm64.tar.gz` — the executable and README, for M-series Macs.
+- `differ-darwin-arm64.tar.gz.sha256` — the archive's SHA-256 checksum.
+
+Download both assets into the same directory, then run:
+
+```sh
+shasum -a 256 -c differ-darwin-arm64.tar.gz.sha256
+tar -xzf differ-darwin-arm64.tar.gz
+./differ -repo /path/to/working-copy BASE_SHA HEAD_SHA
+```
+
+Git must be installed on the Mac; Node.js and Go are not needed to run the release binary. The binary is not Developer ID signed or notarized.
+
 ## Development
 
 Build the frontend once before running Go (it is embedded at compile time):
