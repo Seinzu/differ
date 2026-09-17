@@ -78,6 +78,10 @@ go vet ./...
 
 Go integration tests create temporary repositories and exercise ancestry, reverse and divergent comparisons, merges, root commits, renames, binary files, odd filenames, whitespace, and preview limits. Frontend tests cover split-diff alignment and inline changed spans.
 
+The **CI** workflow runs on pull requests and pushes to `main`. It checks Prettier and Go formatting, TypeScript types, frontend tests, `go vet`, Go tests with the race detector, and the final application build. The frontend is built before Go checks because Go embeds its output. Superseded runs for the same pull request or branch are cancelled.
+
+Run `npm run format:check` to check frontend and workflow formatting locally, or `npm run format` to fix it. For Go formatting, use `gofmt -w cmd internal web/embed.go`. Run `go test -race ./...` to match CI's race-enabled Go tests after building the frontend.
+
 ## Layout
 
 ```text

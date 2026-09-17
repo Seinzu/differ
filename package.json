@@ -7,7 +7,8 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "format": "prettier --write web/src vite.config.ts tsconfig.json package.json"
+    "format": "prettier --write web/src vite.config.ts tsconfig.json package.json .github/workflows",
+    "format:check": "prettier --check web/src vite.config.ts tsconfig.json package.json .github/workflows"
   },
   "dependencies": {
     "highlight.js": "^11.11.1",
