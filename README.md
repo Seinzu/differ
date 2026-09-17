@@ -1,0 +1,70 @@
+# Differ
+
+A local, read-only code review tool. A Go server hosts a React + TypeScript application with GitHub-style side-by-side diffs.
+
+## Run
+
+Requires **Go 1.24+**, **Node.js 20.19+**, and **Git** on your PATH.
+
+```sh
+npm ci
+make build
+./bin/differ -repo /path/to/working-copy BASE_SHA HEAD_SHA
+```
+
+Open **http://127.0.0.1:7331**. You can change the working copy and both refs in the UI. Full or abbreviated SHAs, branches, tags, and expressions such as `HEAD~3` are supported.
+
+The resulting binary embeds the frontend, so Node.js is only needed to build it. You can copy the binary elsewhere and run it from any Git working copy:
+
+```sh
+/path/to/differ HEAD~3 HEAD
+# Or set the initial refs and port explicitly:
+/path/to/differ -repo . -base main -head feature -addr 127.0.0.1:8080
+```
+
+The default comparison is `HEAD~1` to `HEAD`. A repository with only one commit needs another commit before that default comparison is possible. An empty or invalid working copy shows a setup/error state; no sample changes are substituted.
+
+## Review behavior
+
+- **Total diff:** directly compares the base snapshot to the head snapshot (`git diff BASE HEAD`). It does not substitute the merge base. Reversed and divergent comparisons work.
+- **Commit by commit:** available when either commit is an ancestor of the other. Includes commits reachable from the newer commit but not the older one, in parent-before-child order. The older endpoint is excluded. Reversed comparisons still list commits oldest to newest.
+- Each commit is compared with its **first parent**. Merge commits can therefore repeat changes also visible in the merged branch's commits. A root commit introduced by an unrelated-history merge is compared with an empty tree.
+- Side-by-side line alignment, line numbers, syntax highlighting, inline changed spans, rename detection, file statistics, and missing-final-newline indicators.
+- Filter files, collapse diffs, mark files viewed, hide viewed files, ignore whitespace, wrap long lines, or show more context. Viewed state is stored in the browser per repository and resolved SHA pair.
+- Stats describe the original comparison, even when whitespace is ignored. Binary files and submodule changes show metadata instead of a text preview.
+- Files load as they approach the viewport. Text previews are limited to 2 MB per blob, 4 MB per patch, and 10,000 patch lines. Larger files show an explicit notice. Individual Git commands have a 30-second timeout and 32 MB output limit.
+
+Git remains the source of truth. Differ does not check out commits, modify files, stage changes, fetch, push, or create commits. Uncommitted working-tree changes are outside the comparison. Git external diff and text conversion commands are disabled.
+
+The server binds only to loopback addresses and rejects cross-origin API requests and non-local hostnames. It has access to working copies readable by the user running it. Local links include the working-copy path and only work on a machine with that path and a running Differ server.
+
+## Development
+
+Build the frontend once before running Go (it is embedded at compile time):
+
+```sh
+npm ci
+npm run build
+go run ./cmd/differ -repo /path/to/working-copy
+```
+
+For frontend hot reload, run `npm run dev` in a second terminal and use the Vite URL. Vite proxies `/api` to the Go server on port 7331. Rebuild/restart Go after frontend changes when using the Go-served URL instead of Vite.
+
+```sh
+make test
+go vet ./...
+```
+
+Go integration tests create temporary repositories and exercise ancestry, reverse and divergent comparisons, merges, root commits, renames, binary files, odd filenames, whitespace, and preview limits. Frontend tests cover split-diff alignment and inline changed spans.
+
+## Layout
+
+```text
+cmd/differ/       CLI and HTTP server lifecycle
+internal/git/     Read-only Git operations and integration tests
+internal/server/  JSON API, local-request boundary, static hosting
+web/src/          React UI, diff renderer, styles, parser tests
+web/embed.go      Built frontend embedded into the Go binary
+```
+
+API: `GET /api/config`, `GET /api/compare?repo=…&base=…&head=…`, and `GET /api/file?repo=…&base=…&head=…&path=…&context=3&whitespace=show`.
