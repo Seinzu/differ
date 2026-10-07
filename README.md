@@ -27,8 +27,16 @@ The resulting binary embeds the frontend, so Node.js is only needed to build it.
 
 - **Branch:** pick any local branch (the checked-out branch is the default). A branch is compared with its merge base on the default branch (`main`, then `master`, then the branch `origin/HEAD` names), so only the branch's own commits appear even when `main` has moved on.
 - **Latest commits:** on the default branch itself, on a branch with no commits beyond it, or in a repository without a default branch, Differ shows the latest commit. Use the stepper to widen the range; once it covers every first-parent commit, the comparison starts from the empty tree.
-- **Uncommitted:** on the checked-out branch, end the diff at your working tree instead of the last commit. Tracked changes (staged or not) and untracked files are included; ignored files are not. In commit-by-commit review, the uncommitted changes appear as a final **Working tree** step. **Refresh** takes a new snapshot. With **Latest commits** set to 0, only the uncommitted changes are shown.
+- **Uncommitted:** for a branch checked out in a worktree, end the diff at that worktree instead of the last commit. Tracked changes (staged or not) and untracked files are included; ignored files are not. In commit-by-commit review, the uncommitted changes appear as a final **Working tree** step. **Refresh** takes a new snapshot. With **Latest commits** set to 0, only the uncommitted changes are shown.
 - **Custom refs:** compare any two commits. Full or abbreviated SHAs, branches, tags, and expressions such as `HEAD~3` are supported; `:worktree` as the head means the working tree.
+
+### Worktrees
+
+Differ works with repositories that use `git worktree`, including the layout where a folder holds the bare repository (for example in `.bare`, with a `.git` file pointing to it) beside one folder per worktree. Open the repository from any of its worktrees, from that folder, or from a plain bare repository such as `project.git`; the chooser marks all of them as repositories. The repository is named after the folder that holds it, not the worktree.
+
+The branch menu shows which worktree each branch is checked out in. **Uncommitted** reads the working tree of whichever worktree has the selected branch, so you can review every worktree's in-progress changes without reopening Differ. A bare repository has no working tree of its own, and a branch that is not checked out anywhere has no uncommitted changes.
+
+Captured conversations are shared by all worktrees of a repository. Run `differ install-hooks` in a bare repository to add the Claude Code settings to each existing worktree; worktrees added later need it too unless `.claude/settings.json` is committed.
 
 The current selection is kept in the URL, so **Copy local link** reopens the same view. An empty or invalid working copy shows a setup/error state; no sample changes are substituted.
 

@@ -246,3 +246,27 @@ func TestInstall(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestInstallInBareRepository(t *testing.T) {
+	source := t.TempDir()
+	gitCmd(t, source, "init", "-q", "-b", "main")
+	write(t, filepath.Join(source, "a.txt"), "a\n")
+	commitAll(t, source, "Init")
+	gitCmd(t, source, "branch", "feature")
+	project := filepath.Join(t.TempDir(), "project")
+	gitCmd(t, source, "clone", "-q", "--bare", source, filepath.Join(project, ".bare"))
+	write(t, filepath.Join(project, ".git"), "gitdir: ./.bare\n")
+	gitCmd(t, project, "worktree", "add", "-q", "main", "main")
+	gitCmd(t, project, "worktree", "add", "-q", "feature", "feature")
+	if _, err := Install(context.Background(), project, "differ", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"main/.claude/settings.local.json", "feature/.claude/settings.local.json", ".bare/hooks/post-rewrite"} {
+		if _, err := os.Stat(filepath.Join(project, path)); err != nil {
+			t.Fatalf("missing %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(project, ".claude")); err == nil {
+		t.Fatal("wrote settings into the bare repository folder")
+	}
+}

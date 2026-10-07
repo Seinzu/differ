@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -14,18 +13,25 @@ type Branch struct {
 	SHA     string `json:"sha"`
 	Subject string `json:"subject"`
 	Date    string `json:"date"`
-	Current bool   `json:"current"`
+	// Current is set for the branch checked out in the opened worktree.
+	Current bool `json:"current"`
+	// Worktree is where the branch is checked out, if anywhere.
+	Worktree string `json:"worktree,omitempty"`
 }
 
 // Info describes a working copy for choosing what to review.
 type Info struct {
-	Repository    string   `json:"repository"`
-	Name          string   `json:"name"`
-	CurrentBranch string   `json:"currentBranch"`
-	DefaultBranch string   `json:"defaultBranch"`
-	Detached      bool     `json:"detached"`
-	Dirty         bool     `json:"dirty"`
-	Branches      []Branch `json:"branches"`
+	Repository string `json:"repository"`
+	Name       string `json:"name"`
+	Bare       bool   `json:"bare"`
+	// CurrentBranch is checked out in the opened worktree. In a bare
+	// repository it is the branch HEAD names, which no worktree may have.
+	CurrentBranch string     `json:"currentBranch"`
+	DefaultBranch string     `json:"defaultBranch"`
+	Detached      bool       `json:"detached"`
+	Dirty         bool       `json:"dirty"`
+	Branches      []Branch   `json:"branches"`
+	Worktrees     []Checkout `json:"worktrees"`
 }
 
 // CurrentBranch is the checked-out branch, or empty for a detached HEAD.
@@ -60,13 +66,21 @@ func (r *Repository) DefaultBranch(ctx context.Context) string {
 }
 
 func (r *Repository) Info(ctx context.Context) (*Info, error) {
-	info := &Info{Repository: r.Path, Name: filepath.Base(r.Path), CurrentBranch: r.CurrentBranch(ctx), DefaultBranch: r.DefaultBranch(ctx), Branches: []Branch{}}
-	info.Detached = info.CurrentBranch == ""
-	status, err := run(ctx, r.Path, "status", "--porcelain", "--untracked-files=normal")
-	if err != nil {
+	info := &Info{Repository: r.Path, Name: r.Name(ctx), Bare: r.Bare, CurrentBranch: r.CurrentBranch(ctx), DefaultBranch: r.DefaultBranch(ctx), Branches: []Branch{}}
+	info.Detached = info.CurrentBranch == "" && !r.Bare
+	var err error
+	if info.Worktrees, err = r.Worktrees(ctx); err != nil {
 		return nil, err
 	}
-	info.Dirty = len(status) > 0
+	checkedOut := map[string]string{}
+	for _, w := range info.Worktrees {
+		if w.Branch != "" {
+			checkedOut[w.Branch] = w.Path
+		}
+		if w.Current {
+			info.Dirty = w.Dirty
+		}
+	}
 	out, err := run(ctx, r.Path, "for-each-ref", "--sort=-committerdate", "--format=%(refname:short)%00%(objectname)%00%(contents:subject)%00%(committerdate:iso-strict)%00", "refs/heads")
 	if err != nil {
 		return nil, err
@@ -74,7 +88,7 @@ func (r *Repository) Info(ctx context.Context) (*Info, error) {
 	parts := strings.Split(string(out), "\x00")
 	for i := 0; i+3 < len(parts); i += 4 {
 		name := strings.TrimSpace(parts[i])
-		info.Branches = append(info.Branches, Branch{name, parts[i+1], parts[i+2], parts[i+3], name == info.CurrentBranch})
+		info.Branches = append(info.Branches, Branch{Name: name, SHA: parts[i+1], Subject: parts[i+2], Date: parts[i+3], Current: !r.Bare && name == info.CurrentBranch, Worktree: checkedOut[name]})
 	}
 	return info, nil
 }
@@ -104,6 +118,10 @@ func (r *Repository) DefaultRange(ctx context.Context, branch string, count int)
 	rg := &Range{Branch: branch, DefaultBranch: r.DefaultBranch(ctx), Count: count, Head: "HEAD"}
 	if rg.Branch == "" {
 		rg.Branch = r.CurrentBranch(ctx)
+		// A bare repository's HEAD can name a branch that does not exist.
+		if r.Bare && rg.Branch != "" && !r.hasBranch(ctx, rg.Branch) {
+			rg.Branch = rg.DefaultBranch
+		}
 	}
 	if rg.Branch != "" {
 		if !r.hasBranch(ctx, rg.Branch) {

@@ -28,6 +28,7 @@ export interface Comparison {
   deletions: number;
   range?: Range;
   worktree?: boolean;
+  worktreePath?: string;
 }
 export interface Patch {
   patch: string;
@@ -46,15 +47,26 @@ export interface Branch {
   subject: string;
   date: string;
   current: boolean;
+  worktree?: string;
+}
+export interface Checkout {
+  path: string;
+  branch: string;
+  head: string;
+  detached: boolean;
+  dirty: boolean;
+  current: boolean;
 }
 export interface RepoInfo {
   repository: string;
   name: string;
+  bare: boolean;
   currentBranch: string;
   defaultBranch: string;
   detached: boolean;
   dirty: boolean;
   branches: Branch[];
+  worktrees: Checkout[];
 }
 export interface Range {
   mode: "branch" | "recent";

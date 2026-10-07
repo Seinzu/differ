@@ -34,16 +34,32 @@ func Install(ctx context.Context, dir, executable string, local bool) ([]string,
 	quoted := shellQuote(executable)
 	// Hooks must never interrupt Claude: skip silently when Differ is missing.
 	command := fmt.Sprintf("command -v %s >/dev/null 2>&1 && %s %s || true", quoted, quoted, claudeMarker)
-	settings := filepath.Join(repo.Path, ".claude", name)
-	added, err := addClaudeHooks(settings, command)
-	if err != nil {
-		return nil, err
-	}
+	// Claude reads settings from the folder it runs in, so a bare repository
+	// gets them in each of its worktrees instead.
+	roots := []string{repo.Path}
 	var report []string
-	if added {
-		report = append(report, "Added Claude Code hooks to "+settings)
-	} else {
-		report = append(report, "Claude Code hooks already present in "+settings)
+	if repo.Bare {
+		worktrees, err := repo.Worktrees(ctx)
+		if err != nil {
+			return nil, err
+		}
+		roots = nil
+		for _, w := range worktrees {
+			roots = append(roots, w.Path)
+		}
+		report = append(report, "Bare repository: worktrees added later need `differ install-hooks` too, unless .claude/settings.json is committed.")
+	}
+	for _, root := range roots {
+		settings := filepath.Join(root, ".claude", name)
+		added, err := addClaudeHooks(settings, command)
+		if err != nil {
+			return nil, err
+		}
+		if added {
+			report = append(report, "Added Claude Code hooks to "+settings)
+		} else {
+			report = append(report, "Claude Code hooks already present in "+settings)
+		}
 	}
 
 	out, err := repo.GitPath(ctx, "hooks")

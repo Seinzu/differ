@@ -53,7 +53,12 @@ func runEnv(ctx context.Context, dir string, env []string, args ...string) ([]by
 	return out.Bytes(), nil
 }
 
-type Repository struct{ Path string }
+// Repository is a working copy, or a bare repository (which may own linked
+// worktrees). Path is the working tree's root, or the bare repository folder.
+type Repository struct {
+	Path string
+	Bare bool
+}
 
 func Open(ctx context.Context, path string) (*Repository, error) {
 	if strings.TrimSpace(path) == "" {
@@ -62,6 +67,19 @@ func Open(ctx context.Context, path string) (*Repository, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
+	}
+	out, err := run(ctx, abs, "rev-parse", "--is-bare-repository", "--absolute-git-dir")
+	if err != nil {
+		return nil, fmt.Errorf("Open a local Git working copy: %w", err)
+	}
+	if fields := strings.Fields(string(out)); len(fields) == 2 && fields[0] == "true" {
+		// Keep a folder whose .git file points at the bare repository (such
+		// as a .bare directory beside worktree folders) as the chosen path.
+		gitDir := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[1])
+		if !samePath(gitDir, abs) && !samePath(filepath.Dir(gitDir), abs) {
+			abs = gitDir
+		}
+		return &Repository{Path: abs, Bare: true}, nil
 	}
 	root, err := run(ctx, abs, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -151,6 +169,9 @@ type Comparison struct {
 	// Worktree is set when head is a snapshot of uncommitted changes. Head is
 	// then that snapshot's tree SHA, so later file requests see the same state.
 	Worktree bool `json:"worktree,omitempty"`
+	// WorktreePath is the linked worktree the snapshot came from, when it is
+	// not the opened one.
+	WorktreePath string `json:"worktreePath,omitempty"`
 }
 
 func (r *Repository) ancestor(ctx context.Context, a, b string) (bool, error) {
@@ -169,6 +190,8 @@ func (r *Repository) Compare(ctx context.Context, baseRef, headRef string) (*Com
 	// working-tree snapshot, and headCommit is empty for a bare tree SHA.
 	var head, headCommit string
 	switch {
+	case headRef == Worktree && r.Bare:
+		return nil, errors.New("A bare repository has no working tree; choose a branch checked out in a worktree")
 	case headRef == Worktree:
 		if headCommit, err = r.Resolve(ctx, "HEAD"); err != nil {
 			return nil, errors.New("Uncommitted changes need at least one commit to compare with")
@@ -185,7 +208,7 @@ func (r *Repository) Compare(ctx context.Context, baseRef, headRef string) (*Com
 			head = headCommit
 		}
 	}
-	c := &Comparison{Repository: r.Path, Name: filepath.Base(r.Path), Base: base, Head: head, Relationship: "diverged", Commits: []Commit{}, Worktree: headRef == Worktree}
+	c := &Comparison{Repository: r.Path, Name: r.Name(ctx), Base: base, Head: head, Relationship: "diverged", Commits: []Commit{}, Worktree: headRef == Worktree}
 	older, newer := base, headCommit
 	if headCommit == "" {
 		c.Relationship = "snapshot"

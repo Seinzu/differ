@@ -88,3 +88,13 @@ func TestConversationsWithoutDatabase(t *testing.T) {
 		t.Fatal("created the database while reading")
 	}
 }
+
+func TestBrowseRecognizesBareRepositories(t *testing.T) {
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", "--bare", filepath.Join(dir, "plain.git")).CombinedOutput(); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	if !isRepository(filepath.Join(dir, "plain.git")) || isRepository(dir) {
+		t.Fatal("bare repository not recognized")
+	}
+}

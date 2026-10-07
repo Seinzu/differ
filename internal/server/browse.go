@@ -27,9 +27,19 @@ type Listing struct {
 	Truncated  bool       `json:"truncated"`
 }
 
+// isRepository recognizes working copies and worktrees (a .git folder or
+// file) and bare repositories (HEAD beside objects and refs folders).
 func isRepository(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return true
+	}
+	for _, name := range []string{"objects", "refs"} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
+			return false
+		}
+	}
+	info, err := os.Stat(filepath.Join(dir, "HEAD"))
+	return err == nil && info.Mode().IsRegular()
 }
 
 func browse(path string) (*Listing, error) {
