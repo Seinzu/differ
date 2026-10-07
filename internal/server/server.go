@@ -11,7 +11,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"differ/internal/conversations"
 	"differ/internal/git"
@@ -225,26 +224,6 @@ func linkedConversations(r *http.Request, repo *git.Repository, database string)
 	if len(shas) > maxLinkedCommits {
 		shas = shas[len(shas)-maxLinkedCommits:]
 	}
-	infos, err := repo.Commits(r.Context(), shas)
-	if err != nil {
-		return nil, err
-	}
-	steps := make([]git.CommitInfo, 0, len(shas)+1)
-	for _, sha := range shas {
-		if info, ok := infos[sha]; ok {
-			steps = append(steps, info)
-		}
-	}
-	if tree, parent := q.Get("tree"), q.Get("treeParent"); tree != "" {
-		if !git.IsObjectName(tree) || !git.IsObjectName(parent) {
-			return nil, errors.New("Invalid working-tree snapshot")
-		}
-		changes, err := repo.TreeChanges(r.Context(), parent, tree)
-		if err != nil {
-			return nil, err
-		}
-		steps = append(steps, git.CommitInfo{SHA: tree, Parents: []string{parent}, Date: time.Now(), Changes: changes})
-	}
 	gitDir, err := repo.CommonDir(r.Context())
 	if err != nil {
 		return nil, err
@@ -257,6 +236,6 @@ func linkedConversations(r *http.Request, repo *git.Repository, database string)
 	if err != nil {
 		return nil, err
 	}
-	result.Turns = conversations.LinkTurns(turns, rewrites, steps)
-	return result, nil
+	result.Turns, err = conversations.LinkCommits(r.Context(), repo, turns, rewrites, shas, q.Get("tree"), q.Get("treeParent"), q.Get("branch"))
+	return result, err
 }

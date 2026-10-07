@@ -1,6 +1,8 @@
 package conversations
 
 import (
+	"context"
+	"errors"
 	"sort"
 	"time"
 
@@ -9,10 +11,14 @@ import (
 
 // Link connects a turn to a reviewed commit (or working-tree snapshot).
 // Match says how, strongest first:
-//   - "commit": the commit was made during the turn (followed through amends
-//     and rebases recorded by the post-rewrite hook);
+//   - "commit": the commit was made (or amended) during the turn, followed
+//     through amends and rebases recorded by the post-rewrite hook;
 //   - "content": the commit leaves a file the agent edited with exactly the
 //     content the turn ended with, which survives rebases without the hook;
+//   - "head": the commit was HEAD while the turn ran, so the conversation
+//     happened at that point in the branch, even if it changed nothing.
+//     Amended and rebased commits are found through the post-rewrite hook,
+//     or by their author, author date, and subject when it did not run;
 //   - "path": no stronger link exists, and this is the earliest commit
 //     authored after the turn that changes a file the agent edited.
 type Link struct {
@@ -23,13 +29,15 @@ type Link struct {
 type LinkedTurn struct {
 	Turn
 	Links []Link `json:"links"`
+	// OnBranch marks an unlinked turn that happened on the reviewed branch
+	// while it was under review.
+	OnBranch bool `json:"onBranch"`
 }
 
-// LinkTurns links each turn to steps, the commits under review from oldest
-// to newest (the last may be a working-tree snapshot). rewrites maps commit
-// SHAs to their replacements after amends and rebases.
-func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo) []LinkedTurn {
-	follow := func(sha string) string {
+// follower resolves a commit SHA to its latest replacement after amends and
+// rebases.
+func follower(rewrites map[string]string) func(string) string {
+	return func(sha string) string {
 		// Bounded in case of a cycle (a rebase that was later undone).
 		for i := 0; i < 100; i++ {
 			next, ok := rewrites[sha]
@@ -40,13 +48,56 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo)
 		}
 		return sha
 	}
+}
+
+// turnHead is the commit a turn worked on: HEAD when it finished, or when it
+// started if it never finished.
+func turnHead(t Turn) string {
+	if t.HeadAfter != "" {
+		return t.HeadAfter
+	}
+	return t.HeadBefore
+}
+
+// LinkTurns links each turn to steps, the commits under review from oldest
+// to newest (the last may be a working-tree snapshot). rewrites maps commit
+// SHAs to their replacements after amends and rebases. outside describes
+// commits turns worked on that are not under review, so rewritten ones can
+// be recognized by identity. Unlinked turns on branch are marked OnBranch.
+func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo, outside map[string]git.CommitInfo, branch string) []LinkedTurn {
+	follow := follower(rewrites)
 	index := map[string]int{}
 	byContent := map[[2]string][]string{}
+	byIdentity := map[string]string{}
 	for i, step := range steps {
 		index[step.SHA] = i
+		if step.Identity != "" {
+			byIdentity[step.Identity] = step.SHA
+		}
 		for _, c := range step.Changes {
 			key := [2]string{c.Path, c.Blob}
 			byContent[key] = append(byContent[key], step.SHA)
+		}
+	}
+	// reviewed finds the commit under review that sha has become, if any.
+	reviewed := func(sha string) (string, bool) {
+		if sha == "" {
+			return "", false
+		}
+		sha = follow(sha)
+		if _, ok := index[sha]; ok {
+			return sha, true
+		}
+		if info, ok := outside[sha]; ok && info.Identity != "" {
+			current, ok := byIdentity[info.Identity]
+			return current, ok
+		}
+		return "", false
+	}
+	var earliest time.Time
+	for _, step := range steps {
+		if earliest.IsZero() || step.Date.Before(earliest) {
+			earliest = step.Date
 		}
 	}
 	linked := make([]LinkedTurn, 0, len(turns))
@@ -60,17 +111,23 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo)
 			}
 		}
 		if t.HeadAfter != "" && t.HeadAfter != t.HeadBefore {
-			before := follow(t.HeadBefore)
-			for sha := follow(t.HeadAfter); sha != before; {
-				i, ok := index[sha]
-				if !ok {
-					break
+			if after, ok := reviewed(t.HeadAfter); ok {
+				before, _ := reviewed(t.HeadBefore)
+				if before == after {
+					// The turn's starting commit was amended into its last one.
+					add(after, "commit")
 				}
-				add(sha, "commit")
-				if len(steps[i].Parents) == 0 {
-					break
+				for sha := after; sha != before; {
+					i, ok := index[sha]
+					if !ok {
+						break
+					}
+					add(sha, "commit")
+					if len(steps[i].Parents) == 0 {
+						break
+					}
+					sha = steps[i].Parents[0]
 				}
-				sha = steps[i].Parents[0]
 			}
 		}
 		for _, f := range t.Files {
@@ -78,7 +135,13 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo)
 				add(sha, "content")
 			}
 		}
-		if len(lt.Links) == 0 && len(t.Files) > 0 {
+		// Where the turn's edits landed matters more than where it started,
+		// so the path fallback runs whenever nothing stronger matched.
+		edited := len(lt.Links) > 0
+		if sha, ok := reviewed(turnHead(t)); ok {
+			add(sha, "head")
+		}
+		if !edited && len(t.Files) > 0 {
 			if done, err := time.Parse(time.RFC3339, t.RespondedAt); err == nil {
 				paths := map[string]bool{}
 				for _, f := range t.Files {
@@ -101,8 +164,54 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo)
 				}
 			}
 		}
+		if len(lt.Links) == 0 && branch != "" && t.Branch == branch && !earliest.IsZero() {
+			if at, err := time.Parse(time.RFC3339, t.PromptedAt); err == nil && !at.Before(earliest.Truncate(time.Second)) {
+				lt.OnBranch = true
+			}
+		}
 		sort.SliceStable(lt.Links, func(a, b int) bool { return index[lt.Links[a].SHA] < index[lt.Links[b].SHA] })
 		linked = append(linked, lt)
 	}
 	return linked
+}
+
+// LinkCommits describes the commits under review (full SHAs, oldest first) and an
+// optional working-tree snapshot (tree, with its parent commit), then links
+// turns to them.
+func LinkCommits(ctx context.Context, repo *git.Repository, turns []Turn, rewrites map[string]string, shas []string, tree, treeParent, branch string) ([]LinkedTurn, error) {
+	infos, err := repo.Commits(ctx, shas)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]git.CommitInfo, 0, len(shas)+1)
+	for _, sha := range shas {
+		if info, ok := infos[sha]; ok {
+			steps = append(steps, info)
+		}
+	}
+	if tree != "" {
+		if !git.IsObjectName(tree) || !git.IsObjectName(treeParent) {
+			return nil, errors.New("Invalid working-tree snapshot")
+		}
+		changes, err := repo.TreeChanges(ctx, treeParent, tree)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, git.CommitInfo{SHA: tree, Parents: []string{treeParent}, Date: time.Now(), Changes: changes})
+	}
+	// Describe the commits turns worked on that are not under review: after
+	// an amend or rebase without a recorded rewrite, their identity still
+	// matches the reviewed commit that replaced them.
+	follow := follower(rewrites)
+	var missing []string
+	for _, t := range turns {
+		if sha := follow(turnHead(t)); git.IsObjectName(sha) && infos[sha].SHA == "" {
+			missing = append(missing, sha)
+		}
+	}
+	outside, err := repo.Commits(ctx, missing)
+	if err != nil {
+		return nil, err
+	}
+	return LinkTurns(turns, rewrites, steps, outside, branch), nil
 }

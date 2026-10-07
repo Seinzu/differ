@@ -150,22 +150,19 @@ func TestCaptureAndLinkThroughRebase(t *testing.T) {
 
 	link := func(rewrites map[string]string, shas ...string) []LinkedTurn {
 		t.Helper()
-		infos, err := repo.Commits(ctx, shas)
+		linked, err := LinkCommits(ctx, repo, turns, rewrites, shas, "", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}
-		var steps []git.CommitInfo
-		for _, sha := range shas {
-			steps = append(steps, infos[sha])
-		}
-		return LinkTurns(turns, rewrites, steps)
+		return linked
 	}
 	linked := link(nil, committed, documented)
 	if len(linked[0].Links) != 1 || linked[0].Links[0] != (Link{committed, "commit"}) {
 		t.Fatalf("first links: %+v", linked[0].Links)
 	}
-	// The README was edited after the turn, so only path and time link it.
-	if len(linked[1].Links) != 1 || linked[1].Links[0] != (Link{documented, "path"}) {
+	// The second turn ran at the first commit; its README edit was changed
+	// before committing, so only path and time link it to the Docs commit.
+	if len(linked[1].Links) != 2 || linked[1].Links[0] != (Link{committed, "head"}) || linked[1].Links[1] != (Link{documented, "path"}) {
 		t.Fatalf("second links: %+v", linked[1].Links)
 	}
 
@@ -181,10 +178,11 @@ func TestCaptureAndLinkThroughRebase(t *testing.T) {
 	if _, err := repo.Commits(ctx, []string{"--all"}); err == nil {
 		t.Fatal("accepted an option as a commit")
 	}
-	// Without rewrite records, identical content still links the first turn.
+	// Without rewrite records, the rebased commit keeps its author, author
+	// date, and subject, so the first turn is still known to have made it.
 	linked = link(nil, rebased, rebasedDocs)
-	if len(linked[0].Links) != 1 || linked[0].Links[0] != (Link{rebased, "content"}) || linked[1].Links[0] != (Link{rebasedDocs, "path"}) {
-		t.Fatalf("content links: %+v", linked)
+	if len(linked[0].Links) != 1 || linked[0].Links[0] != (Link{rebased, "commit"}) || linked[1].Links[0] != (Link{rebased, "head"}) || linked[1].Links[1] != (Link{rebasedDocs, "path"}) {
+		t.Fatalf("identity links: %+v", linked)
 	}
 	input := committed + " " + rebased + "\n" + documented + " " + rebasedDocs + "\n"
 	if err := HandlePostRewrite(ctx, strings.NewReader(input), "rebase", dir, db); err != nil {
