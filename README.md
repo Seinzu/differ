@@ -74,13 +74,14 @@ Each **turn** (one prompt and the full text response to it, excluding subagents)
 
 ### Linking turns to commits
 
-The **Conversations** tab lists the turns linked to the commits under review. Choose a commit chip to open that commit, or use the turn count in commit-by-commit review to see a commit's turns. Rebases change commit SHAs and committer dates, so links use evidence that survives them, strongest first:
+The **Conversations** tab lists the turns that happened on the branch under review or are linked to its commits. Choose a commit chip to open that commit, or use the turn count in commit-by-commit review to see a commit's turns. Rebases and amends change commit SHAs and committer dates, so links use evidence that survives them, strongest first:
 
-1. **Committed during the turn** (solid chip): commits between the turn's starting and ending `HEAD`. When an amend or rebase rewrites those commits, the `post-rewrite` hook records the old and new SHAs, and Differ follows the chain.
-2. **Same content** (blue chip): the commit leaves a file the turn edited with exactly the content the turn ended with. This needs no hook, so it also covers rebases done elsewhere, as long as the content was not changed.
-3. **Same files, later** (dashed chip): when nothing stronger matches, the earliest commit *authored* after the turn that changes a file the turn edited. Rebases keep author dates by default, so this survives them too.
+1. **Committed during the turn** (green chip): commits made or amended between the turn's starting and ending `HEAD`.
+2. **Same content** (blue chip): the commit leaves a file the turn edited with exactly the content the turn ended with.
+3. **HEAD** (amber chip): the commit `HEAD` pointed at while the turn ran, so a conversation links to the point in the branch where it happened, even when it changed nothing (asking about a commit, say).
+4. **Same files, later** (dashed chip): when neither of the first two matches, the earliest commit *authored* after the turn that changes a file the turn edited.
 
-Uncommitted changes are linked the same way when the working tree ends the comparison. Turns without a link stay available through **Include unlinked turns**.
+Commits rewritten since a turn are followed in two ways. The `post-rewrite` hook records each amend and rebase as old and new SHAs. Without it, a rewritten commit is recognized by its author, author date, and subject, which `git commit --amend --no-edit` and rebases keep (rewording the message needs the hook). A turn on the reviewed branch whose commit is gone entirely, for example after a reset, still appears, marked **on _branch_**. Uncommitted changes are linked the same way when the working tree ends the comparison. Turns from other branches are available through **Include unlinked turns**.
 
 ## GitHub releases
 

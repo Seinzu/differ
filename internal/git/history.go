@@ -60,6 +60,9 @@ type CommitInfo struct {
 	Parents []string
 	Date    time.Time
 	Changes []Change
+	// Identity is the author, author date, and subject, which amends with
+	// --no-edit and rebases keep while the SHA changes.
+	Identity string
 }
 
 var objectName = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
@@ -67,7 +70,8 @@ var objectName = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 // IsObjectName reports whether s is a full SHA-1 or SHA-256 object name.
 func IsObjectName(s string) bool { return objectName.MatchString(s) }
 
-// Commits describes the given commits, which must be full SHAs.
+// Commits describes the given commits, which must be full SHAs. Commits that
+// no longer exist (garbage-collected after a rewrite) are left out.
 func (r *Repository) Commits(ctx context.Context, shas []string) (map[string]CommitInfo, error) {
 	commits := map[string]CommitInfo{}
 	if len(shas) == 0 {
@@ -78,18 +82,19 @@ func (r *Repository) Commits(ctx context.Context, shas []string) (map[string]Com
 			return nil, fmt.Errorf("Invalid commit SHA %q", sha)
 		}
 	}
-	args := append([]string{"log", "--no-walk=unsorted", "--first-parent", "-m", "--no-renames", "--raw", "--no-abbrev", "-z", "--format=%x01%H%x00%P%x00%aI"}, shas...)
+	args := append([]string{"log", "--no-walk=unsorted", "--first-parent", "-m", "--no-renames", "--raw", "--no-abbrev", "-z", "--ignore-missing", "--format=%x01%H%x00%P%x00%aI%x00%ae%x00%s"}, shas...)
 	out, err := run(ctx, r.Path, append(args, "--")...)
 	if err != nil {
 		return nil, err
 	}
 	for _, record := range strings.Split(string(out), "\x01")[1:] {
 		tokens := strings.Split(record, "\x00")
-		if len(tokens) < 3 {
+		if len(tokens) < 5 {
 			continue
 		}
-		info := CommitInfo{SHA: strings.TrimSpace(tokens[0]), Parents: strings.Fields(tokens[1]), Changes: parseRaw(tokens[3:])}
+		info := CommitInfo{SHA: strings.TrimSpace(tokens[0]), Parents: strings.Fields(tokens[1]), Changes: parseRaw(tokens[5:])}
 		info.Date, _ = time.Parse(time.RFC3339, strings.TrimSpace(tokens[2]))
+		info.Identity = strings.Join([]string{tokens[2], tokens[3], tokens[4]}, "\x00")
 		commits[info.SHA] = info
 	}
 	return commits, nil

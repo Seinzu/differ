@@ -147,7 +147,7 @@ function App() {
     let size = 0;
     for (const turn of conversations?.turns ?? []) {
       const links = turn.links.filter((link) => shas.has(link.sha));
-      if (links.length) size++;
+      if (links.length || turn.onBranch) size++;
       for (const link of links)
         byCommit.set(link.sha, (byCommit.get(link.sha) ?? 0) + 1);
     }
@@ -169,6 +169,8 @@ function App() {
       {
         repo: comparison.repository,
         commits: committed.map((c) => c.sha).join(","),
+        // Turns on the reviewed branch stay visible even without a commit link.
+        branch: comparison.range?.branch ?? "",
         ...(worktree
           ? { tree: worktree.sha, treeParent: worktree.parents[0] }
           : {}),

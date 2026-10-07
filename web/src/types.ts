@@ -92,7 +92,7 @@ export interface Listing {
 }
 export interface ConversationLink {
   sha: string;
-  match: "commit" | "content" | "path";
+  match: "commit" | "content" | "head" | "path";
 }
 export interface Turn {
   id: number;
@@ -107,6 +107,7 @@ export interface Turn {
   promptedAt: string;
   respondedAt?: string;
   links: ConversationLink[];
+  onBranch: boolean;
 }
 export interface ConversationList {
   enabled: boolean;

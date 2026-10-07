@@ -13,6 +13,7 @@ import type { Commit, ConversationLink, ConversationList, Turn } from "./types";
 const matchNames: Record<ConversationLink["match"], string> = {
   commit: "Committed during this turn",
   content: "Contains the exact file contents this turn produced",
+  head: "HEAD while this turn ran (followed through amends and rebases)",
   path: "First later commit changing a file this turn edited",
 };
 
@@ -69,8 +70,8 @@ export function Conversations({
       </div>
     );
   const index = new Map(commits.map((c, i) => [c.sha, i]));
-  const linked = list.turns.filter((t) =>
-    t.links.some((l) => index.has(l.sha)),
+  const linked = list.turns.filter(
+    (t) => t.onBranch || t.links.some((l) => index.has(l.sha)),
   );
   let turns = showAll ? list.turns : linked;
   if (commitFilter)
@@ -100,7 +101,7 @@ export function Conversations({
           <span className="conversation-filter">
             {showAll
               ? "Every captured turn in this repository"
-              : "Linked to the commits in this comparison"}
+              : "On this branch or linked to its commits"}
           </span>
         )}
         <label className="conversations-toggle">
@@ -165,6 +166,15 @@ function TurnCard({
           session {turn.sessionId.slice(0, 8)}
         </span>
         <span className="turn-links">
+          {turn.onBranch && (
+            <span
+              className="commit-chip match-branch"
+              title="Happened on this branch, at a commit that is no longer part of it"
+            >
+              <GitBranch size={13} />
+              on {turn.branch}
+            </span>
+          )}
           {turn.links
             .filter((l) => index.has(l.sha))
             .map((link) => {
