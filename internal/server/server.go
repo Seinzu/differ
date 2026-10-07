@@ -2,13 +2,18 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"differ/internal/conversations"
 	"differ/internal/git"
 )
 
@@ -16,7 +21,11 @@ type Config struct {
 	Repository string `json:"repository"`
 	Base       string `json:"base"`
 	Head       string `json:"head"`
+	// Database holds captured Claude Code conversations.
+	Database string `json:"-"`
 }
+
+const maxLinkedCommits = 2000
 
 func New(config Config, assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
@@ -27,12 +36,72 @@ func New(config Config, assets fs.FS) http.Handler {
 			fail(w, err)
 			return
 		}
-		comparison, err := repo.Compare(r.Context(), r.URL.Query().Get("base"), r.URL.Query().Get("head"))
+		q := r.URL.Query()
+		base, head := q.Get("base"), q.Get("head")
+		var rg *git.Range
+		if base == "" && head == "" {
+			// Without explicit refs, review a branch against the default branch.
+			count := 1
+			if q.Get("count") != "" {
+				if count, err = strconv.Atoi(q.Get("count")); err != nil {
+					http.Error(w, "Invalid count", 400)
+					return
+				}
+			}
+			if rg, err = repo.DefaultRange(r.Context(), q.Get("branch"), count); err != nil {
+				fail(w, err)
+				return
+			}
+			base, head = rg.Base, rg.Head
+			if q.Get("uncommitted") == "1" {
+				if current := repo.CurrentBranch(r.Context()); rg.Branch != current {
+					fail(w, fmt.Errorf("Uncommitted changes belong to the checked-out branch, not %s", rg.Branch))
+					return
+				}
+				head = git.Worktree
+			}
+		}
+		comparison, err := repo.Compare(r.Context(), base, head)
 		if err != nil {
 			fail(w, err)
 			return
 		}
+		comparison.Range = rg
 		writeJSON(w, 200, comparison)
+	})
+	mux.HandleFunc("GET /api/repo", func(w http.ResponseWriter, r *http.Request) {
+		repo, err := git.Open(r.Context(), repository(r, config))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		info, err := repo.Info(r.Context())
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, info)
+	})
+	mux.HandleFunc("GET /api/conversations", func(w http.ResponseWriter, r *http.Request) {
+		repo, err := git.Open(r.Context(), repository(r, config))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		result, err := linkedConversations(r, repo, config.Database)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
+	})
+	mux.HandleFunc("GET /api/browse", func(w http.ResponseWriter, r *http.Request) {
+		listing, err := browse(r.URL.Query().Get("path"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, listing)
 	})
 	mux.HandleFunc("GET /api/file", func(w http.ResponseWriter, r *http.Request) {
 		repo, err := git.Open(r.Context(), repository(r, config))
@@ -112,4 +181,67 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+type conversationList struct {
+	Enabled  bool                       `json:"enabled"`
+	Database string                     `json:"database"`
+	Turns    []conversations.LinkedTurn `json:"turns"`
+}
+
+// linkedConversations returns the repository's captured turns linked to the
+// commits listed in the commits parameter (oldest first) and, optionally, a
+// working-tree snapshot given as tree and its parent commit as treeParent.
+func linkedConversations(r *http.Request, repo *git.Repository, database string) (*conversationList, error) {
+	result := &conversationList{Database: database, Turns: []conversations.LinkedTurn{}}
+	store, err := conversations.Open(database, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return result, nil
+	} else if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	result.Enabled = true
+	q := r.URL.Query()
+	var shas []string
+	if q.Get("commits") != "" {
+		shas = strings.Split(q.Get("commits"), ",")
+	}
+	if len(shas) > maxLinkedCommits {
+		shas = shas[len(shas)-maxLinkedCommits:]
+	}
+	infos, err := repo.Commits(r.Context(), shas)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]git.CommitInfo, 0, len(shas)+1)
+	for _, sha := range shas {
+		if info, ok := infos[sha]; ok {
+			steps = append(steps, info)
+		}
+	}
+	if tree, parent := q.Get("tree"), q.Get("treeParent"); tree != "" {
+		if !git.IsObjectName(tree) || !git.IsObjectName(parent) {
+			return nil, errors.New("Invalid working-tree snapshot")
+		}
+		changes, err := repo.TreeChanges(r.Context(), parent, tree)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, git.CommitInfo{SHA: tree, Parents: []string{parent}, Date: time.Now(), Changes: changes})
+	}
+	gitDir, err := repo.CommonDir(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	turns, err := store.Turns(r.Context(), gitDir, 500)
+	if err != nil {
+		return nil, err
+	}
+	rewrites, err := store.Rewrites(r.Context(), gitDir)
+	if err != nil {
+		return nil, err
+	}
+	result.Turns = conversations.LinkTurns(turns, rewrites, steps)
+	return result, nil
 }

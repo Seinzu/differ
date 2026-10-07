@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -25,10 +26,17 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 }
 
 func run(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return runEnv(ctx, dir, nil, args...)
+}
+
+func runEnv(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	args = append([]string{"--no-pager", "--literal-pathspecs", "-c", "core.quotePath=false", "-c", "diff.submodule=short", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", args...)
+	if env != nil {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	var out limitedBuffer
 	var stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
@@ -48,6 +56,9 @@ func run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 type Repository struct{ Path string }
 
 func Open(ctx context.Context, path string) (*Repository, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("Choose a Git working copy to review")
+	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -80,12 +91,37 @@ func (r *Repository) resolveBase(ctx context.Context, ref string) (string, error
 	return strings.TrimSpace(string(out)), err
 }
 
+// resolveTree accepts anything a comparison can name as a snapshot: commits,
+// :empty, :worktree, or the tree SHA a working-tree comparison returned.
+func (r *Repository) resolveTree(ctx context.Context, ref string) (string, error) {
+	switch ref {
+	case ":empty":
+		return r.resolveBase(ctx, ref)
+	case Worktree:
+		return r.SnapshotWorktree(ctx)
+	}
+	return r.treeObject(ctx, ref)
+}
+
+func (r *Repository) treeObject(ctx context.Context, ref string) (string, error) {
+	if strings.TrimSpace(ref) == "" || len(ref) > 1024 {
+		return "", errors.New("Enter a commit SHA, branch, or tag")
+	}
+	data, err := run(ctx, r.Path, "rev-parse", "--verify", "--end-of-options", ref+"^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("Cannot resolve commit %q", ref)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 type Commit struct {
 	SHA     string   `json:"sha"`
 	Parents []string `json:"parents"`
 	Subject string   `json:"subject"`
 	Author  string   `json:"author"`
 	Date    string   `json:"date"`
+	// Uncommitted marks the working-tree snapshot listed after the last commit.
+	Uncommitted bool `json:"uncommitted,omitempty"`
 }
 
 type File struct {
@@ -111,6 +147,10 @@ type Comparison struct {
 	Files        []File   `json:"files"`
 	Additions    int      `json:"additions"`
 	Deletions    int      `json:"deletions"`
+	Range        *Range   `json:"range,omitempty"`
+	// Worktree is set when head is a snapshot of uncommitted changes. Head is
+	// then that snapshot's tree SHA, so later file requests see the same state.
+	Worktree bool `json:"worktree,omitempty"`
 }
 
 func (r *Repository) ancestor(ctx context.Context, a, b string) (bool, error) {
@@ -125,41 +165,73 @@ func (r *Repository) Compare(ctx context.Context, baseRef, headRef string) (*Com
 	if err != nil {
 		return nil, err
 	}
-	head, err := r.Resolve(ctx, headRef)
-	if err != nil {
-		return nil, err
+	// headCommit anchors history; head is what gets diffed. They differ for a
+	// working-tree snapshot, and headCommit is empty for a bare tree SHA.
+	var head, headCommit string
+	switch {
+	case headRef == Worktree:
+		if headCommit, err = r.Resolve(ctx, "HEAD"); err != nil {
+			return nil, errors.New("Uncommitted changes need at least one commit to compare with")
+		}
+		if head, err = r.SnapshotWorktree(ctx); err != nil {
+			return nil, err
+		}
+	default:
+		if headCommit, err = r.Resolve(ctx, headRef); err != nil {
+			if head, err = r.treeObject(ctx, headRef); err != nil {
+				return nil, fmt.Errorf("Cannot resolve commit %q", headRef)
+			}
+		} else {
+			head = headCommit
+		}
 	}
-	c := &Comparison{Repository: r.Path, Name: filepath.Base(r.Path), Base: base, Head: head, Relationship: "diverged", Commits: []Commit{}}
-	older, newer := base, head
-	if base == head {
+	c := &Comparison{Repository: r.Path, Name: filepath.Base(r.Path), Base: base, Head: head, Relationship: "diverged", Commits: []Commit{}, Worktree: headRef == Worktree}
+	older, newer := base, headCommit
+	if headCommit == "" {
+		c.Relationship = "snapshot"
+	} else if base == headCommit {
 		c.Relationship = "equal"
-	} else if baseRef != ":empty" {
-		forward, err := r.ancestor(ctx, base, head)
+	} else if baseRef == ":empty" {
+		// Every commit reachable from head leads away from the empty tree.
+		c.Relationship, older = "forward", ""
+	} else {
+		forward, err := r.ancestor(ctx, base, headCommit)
 		if err != nil {
 			return nil, err
 		}
 		if forward {
 			c.Relationship = "forward"
 		} else {
-			reverse, err := r.ancestor(ctx, head, base)
+			reverse, err := r.ancestor(ctx, headCommit, base)
 			if err != nil {
 				return nil, err
 			}
 			if reverse {
 				c.Relationship = "reverse"
-				older, newer = head, base
+				older, newer = headCommit, base
 			}
 		}
 	}
 	if c.Relationship == "forward" || c.Relationship == "reverse" {
 		// Include side-branch commits brought in by merges, in parent-before-child order.
-		out, err := run(ctx, r.Path, "log", "--reverse", "--topo-order", "--format=%H%x00%P%x00%s%x00%an%x00%aI%x00", older+".."+newer, "--")
+		out, err := run(ctx, r.Path, "log", "--reverse", "--topo-order", "--format=%H%x00%P%x00%s%x00%an%x00%aI%x00", revisionRange(older, newer), "--")
 		if err != nil {
 			return nil, err
 		}
 		parts := strings.Split(string(out), "\x00")
 		for i := 0; i+4 < len(parts); i += 5 {
-			c.Commits = append(c.Commits, Commit{strings.TrimSpace(parts[i]), strings.Fields(parts[i+1]), parts[i+2], parts[i+3], parts[i+4]})
+			c.Commits = append(c.Commits, Commit{SHA: strings.TrimSpace(parts[i]), Parents: strings.Fields(parts[i+1]), Subject: parts[i+2], Author: parts[i+3], Date: parts[i+4]})
+		}
+	}
+	if c.Worktree && (c.Relationship == "forward" || c.Relationship == "equal") {
+		// Uncommitted changes continue the history as one final pseudo-commit.
+		committed, err := r.treeObject(ctx, headCommit)
+		if err != nil {
+			return nil, err
+		}
+		if committed != head {
+			c.Relationship = "forward"
+			c.Commits = append(c.Commits, Commit{SHA: head, Parents: []string{headCommit}, Subject: "Uncommitted changes", Date: time.Now().Format(time.RFC3339), Uncommitted: true})
 		}
 	}
 	c.Files, err = r.Files(ctx, base, head)
@@ -174,6 +246,13 @@ func (r *Repository) Compare(ctx context.Context, baseRef, headRef string) (*Com
 		c.Base = ":empty"
 	}
 	return c, nil
+}
+
+func revisionRange(older, newer string) string {
+	if older == "" {
+		return newer
+	}
+	return older + ".." + newer
 }
 
 func (r *Repository) Files(ctx context.Context, base, head string) ([]File, error) {
@@ -241,11 +320,11 @@ type Patch struct {
 }
 
 func (r *Repository) Patch(ctx context.Context, baseRef, headRef, path string, contextLines int, ignoreWhitespace bool) (*Patch, error) {
-	base, err := r.resolveBase(ctx, baseRef)
+	base, err := r.resolveTree(ctx, baseRef)
 	if err != nil {
 		return nil, err
 	}
-	head, err := r.Resolve(ctx, headRef)
+	head, err := r.resolveTree(ctx, headRef)
 	if err != nil {
 		return nil, err
 	}
