@@ -169,6 +169,7 @@ function App() {
       {
         repo: comparison.repository,
         commits: committed.map((c) => c.sha).join(","),
+        base: comparison.base,
         // Turns on the reviewed branch stay visible even without a commit link.
         branch: comparison.range?.branch ?? "",
         ...(worktree

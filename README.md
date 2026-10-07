@@ -79,9 +79,10 @@ The **Conversations** tab lists the turns that happened on the branch under revi
 1. **Committed during the turn** (green chip): commits made or amended between the turn's starting and ending `HEAD`.
 2. **Same content** (blue chip): the commit leaves a file the turn edited with exactly the content the turn ended with.
 3. **HEAD** (amber chip): the commit `HEAD` pointed at while the turn ran, so a conversation links to the point in the branch where it happened, even when it changed nothing (asking about a commit, say).
-4. **Same files, later** (dashed chip): when neither of the first two matches, the earliest commit *authored* after the turn that changes a file the turn edited.
+4. **Work toward a commit** (dashed amber chip): a turn on the branch whose `HEAD` was a reviewed commit's parent, but not reviewed itself, links to that commit. This covers conversations before a branch's first commit, while `HEAD` was still the commit the branch started from.
+5. **Same files, later** (dashed chip): when neither of the first two matches, the earliest commit *authored* after the turn that changes a file the turn edited.
 
-Commits rewritten since a turn are followed in two ways. The `post-rewrite` hook records each amend and rebase as old and new SHAs. Without it, a rewritten commit is recognized by its author, author date, and subject, which `git commit --amend --no-edit` and rebases keep (rewording the message needs the hook). A turn on the reviewed branch whose commit is gone entirely, for example after a reset, still appears, marked **on _branch_**. Uncommitted changes are linked the same way when the working tree ends the comparison. Turns from other branches are available through **Include unlinked turns**.
+Commits rewritten since a turn are followed in two ways. The `post-rewrite` hook records each amend and rebase as old and new SHAs. Without it, a rewritten commit is recognized by its author, author date, and subject, which `git commit --amend --no-edit` and rebases keep (rewording the message needs the hook). Other turns on the reviewed branch still appear, marked **on _branch_**: those in a Claude session that has linked turns on the branch (such as turns from before a rebase moved the branch's start), and those since the branch's starting commit (such as after a reset dropped the commit they worked on). Uncommitted changes are linked the same way when the working tree ends the comparison. Turns from other branches are available through **Include unlinked turns**.
 
 ## GitHub releases
 

@@ -236,6 +236,6 @@ func linkedConversations(r *http.Request, repo *git.Repository, database string)
 	if err != nil {
 		return nil, err
 	}
-	result.Turns, err = conversations.LinkCommits(r.Context(), repo, turns, rewrites, shas, q.Get("tree"), q.Get("treeParent"), q.Get("branch"))
+	result.Turns, err = conversations.LinkCommits(r.Context(), repo, turns, rewrites, shas, q.Get("base"), q.Get("tree"), q.Get("treeParent"), q.Get("branch"))
 	return result, err
 }

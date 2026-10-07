@@ -1579,6 +1579,12 @@ footer {
   background: #fbf7ee;
   color: #7a5a1c;
 }
+.commit-chip.match-parent {
+  border-style: dashed;
+  border-color: #e3d6b8;
+  background: #fbf7ee;
+  color: #7a5a1c;
+}
 .commit-chip.match-branch {
   border-style: dashed;
   border-color: #d9dee3;

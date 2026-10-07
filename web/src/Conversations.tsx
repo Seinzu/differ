@@ -14,6 +14,7 @@ const matchNames: Record<ConversationLink["match"], string> = {
   commit: "Committed during this turn",
   content: "Contains the exact file contents this turn produced",
   head: "HEAD while this turn ran (followed through amends and rebases)",
+  parent: "Work toward this commit: HEAD was its parent while this turn ran",
   path: "First later commit changing a file this turn edited",
 };
 

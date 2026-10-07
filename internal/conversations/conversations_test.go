@@ -150,7 +150,7 @@ func TestCaptureAndLinkThroughRebase(t *testing.T) {
 
 	link := func(rewrites map[string]string, shas ...string) []LinkedTurn {
 		t.Helper()
-		linked, err := LinkCommits(ctx, repo, turns, rewrites, shas, "", "", "")
+		linked, err := LinkCommits(ctx, repo, turns, rewrites, shas, "", "", "", "")
 		if err != nil {
 			t.Fatal(err)
 		}

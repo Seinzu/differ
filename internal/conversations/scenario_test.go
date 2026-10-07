@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"differ/internal/git"
 )
@@ -63,7 +64,7 @@ func TestQuestionThenAmend(t *testing.T) {
 			gitDir, _ := repo.CommonDir(ctx)
 			turns, _ := store.Turns(ctx, gitDir, 10)
 			rewrites, _ := store.Rewrites(ctx, gitDir)
-			linked, err := LinkCommits(ctx, repo, turns, rewrites, []string{amended}, "", "", "feature")
+			linked, err := LinkCommits(ctx, repo, turns, rewrites, []string{amended}, "", "", "", "feature")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -107,7 +108,7 @@ func TestBranchFallbackAndOtherBranches(t *testing.T) {
 	repo, _ := git.Open(ctx, dir)
 	gitDir, _ := repo.CommonDir(ctx)
 	turns, _ := store.Turns(ctx, gitDir, 10)
-	linked, err := LinkCommits(ctx, repo, turns, nil, []string{kept}, "", "", "feature")
+	linked, err := LinkCommits(ctx, repo, turns, nil, []string{kept}, "", "", "", "feature")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,5 +117,79 @@ func TestBranchFallbackAndOtherBranches(t *testing.T) {
 	}
 	if len(linked[1].Links) != 0 || !linked[1].OnBranch {
 		t.Fatalf("feature turn: %+v", linked[1])
+	}
+}
+
+// Work on a branch from its start: questions and edits before the first
+// commit (HEAD still on the commit the branch started from), then more
+// turns between commits.
+func TestWholeBranchHistory(t *testing.T) {
+	dir := t.TempDir()
+	db := filepath.Join(t.TempDir(), "c.db")
+	ctx := context.Background()
+	gitCmd(t, dir, "init", "-q", "-b", "main")
+	write(t, filepath.Join(dir, "base.txt"), "base\n")
+	commitAll(t, dir, "Base")
+	gitCmd(t, dir, "checkout", "-qb", "feature")
+	log := filepath.Join(t.TempDir(), "s.jsonl")
+	turn := func(prompt string, edits ...string) {
+		hook(t, db, HookInput{SessionID: "s", HookEventName: "UserPromptSubmit", Cwd: dir, Prompt: prompt, TranscriptPath: log})
+		var blocks []map[string]any
+		for _, f := range edits {
+			write(t, filepath.Join(dir, f), prompt+"\n")
+			blocks = append(blocks, edit("Write", f))
+		}
+		transcript(t, log, user(prompt), assistant(append(blocks, text("ok"))...))
+		hook(t, db, HookInput{SessionID: "s", HookEventName: "Stop", Cwd: dir, TranscriptPath: log})
+	}
+	turn("How should I structure this?")
+	turn("Draft the parser", "parser.go")
+	// The user tweaks the draft before committing, so content does not match.
+	write(t, filepath.Join(dir, "parser.go"), "package parser\n")
+	first := commitAll(t, dir, "Add parser")
+	turn("Review the parser")
+	write(t, filepath.Join(dir, "lexer.go"), "package parser\n")
+	second := commitAll(t, dir, "Add lexer")
+
+	store, _ := Open(db, false)
+	defer store.Close()
+	repo, _ := git.Open(ctx, dir)
+	gitDir, _ := repo.CommonDir(ctx)
+	turns, _ := store.Turns(ctx, gitDir, 10)
+	base := gitCmd(t, dir, "rev-parse", "main")
+	linked, err := LinkCommits(ctx, repo, turns, nil, []string{first, second}, base, "", "", "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"How should I structure this?": first,
+		"Draft the parser":             first,
+		"Review the parser":            first,
+	}
+	for _, lt := range linked {
+		if len(lt.Links) == 0 || lt.Links[0].SHA != want[lt.Prompt] {
+			t.Errorf("%q: links %+v, on branch %v", lt.Prompt, lt.Links, lt.OnBranch)
+		}
+	}
+	if linked[0].Links[0].Match != "parent" {
+		t.Errorf("question before the first commit linked by %q", linked[0].Links[0].Match)
+	}
+}
+
+func TestSessionsKeepEarlierTurnsOnBranch(t *testing.T) {
+	start := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	at := func(minutes int) string { return start.Add(time.Duration(minutes) * time.Minute).Format(time.RFC3339) }
+	commit := git.CommitInfo{SHA: strings.Repeat("c", 40), Parents: []string{strings.Repeat("b", 40)}, Date: start.Add(3 * time.Hour)}
+	turns := []Turn{
+		// Before the branch's starting point moved in a rebase: HEAD is a
+		// commit nothing under review builds on.
+		{ID: 1, SessionID: "work", Branch: "feature", HeadAfter: strings.Repeat("a", 40), PromptedAt: at(0)},
+		{ID: 2, SessionID: "work", Branch: "feature", HeadAfter: commit.SHA, PromptedAt: at(200)},
+		// An older session that reused the branch name.
+		{ID: 3, SessionID: "old", Branch: "feature", HeadAfter: strings.Repeat("d", 40), PromptedAt: at(-600)},
+	}
+	linked := LinkTurns(turns, nil, []git.CommitInfo{commit}, nil, "feature", start.Add(time.Hour))
+	if !linked[0].OnBranch || len(linked[1].Links) != 1 || linked[2].OnBranch {
+		t.Fatalf("on branch: %v %v %v", linked[0].OnBranch, linked[1].Links, linked[2].OnBranch)
 	}
 }

@@ -19,6 +19,10 @@ import (
 //     happened at that point in the branch, even if it changed nothing.
 //     Amended and rebased commits are found through the post-rewrite hook,
 //     or by their author, author date, and subject when it did not run;
+//   - "parent": the turn ran on the reviewed branch with HEAD at this
+//     commit's parent, which is not under review itself, so the turn was
+//     work toward this commit (such as a conversation before a branch's
+//     first commit);
 //   - "path": no stronger link exists, and this is the earliest commit
 //     authored after the turn that changes a file the agent edited.
 type Link struct {
@@ -29,8 +33,8 @@ type Link struct {
 type LinkedTurn struct {
 	Turn
 	Links []Link `json:"links"`
-	// OnBranch marks an unlinked turn that happened on the reviewed branch
-	// while it was under review.
+	// OnBranch marks an unlinked turn that happened on the reviewed branch:
+	// in a session with linked turns on it, or since the branch started.
 	OnBranch bool `json:"onBranch"`
 }
 
@@ -63,8 +67,9 @@ func turnHead(t Turn) string {
 // to newest (the last may be a working-tree snapshot). rewrites maps commit
 // SHAs to their replacements after amends and rebases. outside describes
 // commits turns worked on that are not under review, so rewritten ones can
-// be recognized by identity. Unlinked turns on branch are marked OnBranch.
-func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo, outside map[string]git.CommitInfo, branch string) []LinkedTurn {
+// be recognized by identity. Unlinked turns on branch are marked OnBranch
+// when their session has linked turns on it or they came after since.
+func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo, outside map[string]git.CommitInfo, branch string, since time.Time) []LinkedTurn {
 	follow := follower(rewrites)
 	index := map[string]int{}
 	byContent := map[[2]string][]string{}
@@ -94,10 +99,16 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo,
 		}
 		return "", false
 	}
-	var earliest time.Time
+	// children maps a commit to the first reviewed commit built on it.
+	children := map[string]string{}
 	for _, step := range steps {
-		if earliest.IsZero() || step.Date.Before(earliest) {
-			earliest = step.Date
+		if len(step.Parents) > 0 {
+			if _, ok := children[step.Parents[0]]; !ok {
+				children[step.Parents[0]] = step.SHA
+			}
+		}
+		if since.IsZero() || step.Date.Before(since) {
+			since = step.Date
 		}
 	}
 	linked := make([]LinkedTurn, 0, len(turns))
@@ -140,6 +151,10 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo,
 		edited := len(lt.Links) > 0
 		if sha, ok := reviewed(turnHead(t)); ok {
 			add(sha, "head")
+		} else if child, ok := children[follow(turnHead(t))]; ok && turnHead(t) != "" && branch != "" && t.Branch == branch {
+			// Only on the reviewed branch: the commit a branch starts from is
+			// also HEAD for unrelated work on the branch it came from.
+			add(child, "parent")
 		}
 		if !edited && len(t.Files) > 0 {
 			if done, err := time.Parse(time.RFC3339, t.RespondedAt); err == nil {
@@ -164,13 +179,26 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo,
 				}
 			}
 		}
-		if len(lt.Links) == 0 && branch != "" && t.Branch == branch && !earliest.IsZero() {
-			if at, err := time.Parse(time.RFC3339, t.PromptedAt); err == nil && !at.Before(earliest.Truncate(time.Second)) {
+		if len(lt.Links) == 0 && branch != "" && t.Branch == branch && !since.IsZero() {
+			if at, err := time.Parse(time.RFC3339, t.PromptedAt); err == nil && !at.Before(since.Truncate(time.Second)) {
 				lt.OnBranch = true
 			}
 		}
 		sort.SliceStable(lt.Links, func(a, b int) bool { return index[lt.Links[a].SHA] < index[lt.Links[b].SHA] })
 		linked = append(linked, lt)
+	}
+	// A session that produced linked turns on this branch was working on it
+	// throughout, including turns from before a rebase moved its start.
+	sessions := map[string]bool{}
+	for _, lt := range linked {
+		if len(lt.Links) > 0 && lt.Branch == branch {
+			sessions[lt.SessionID] = true
+		}
+	}
+	for i := range linked {
+		if lt := &linked[i]; len(lt.Links) == 0 && branch != "" && lt.Branch == branch && sessions[lt.SessionID] {
+			lt.OnBranch = true
+		}
 	}
 	return linked
 }
@@ -178,7 +206,7 @@ func LinkTurns(turns []Turn, rewrites map[string]string, steps []git.CommitInfo,
 // LinkCommits describes the commits under review (full SHAs, oldest first) and an
 // optional working-tree snapshot (tree, with its parent commit), then links
 // turns to them.
-func LinkCommits(ctx context.Context, repo *git.Repository, turns []Turn, rewrites map[string]string, shas []string, tree, treeParent, branch string) ([]LinkedTurn, error) {
+func LinkCommits(ctx context.Context, repo *git.Repository, turns []Turn, rewrites map[string]string, shas []string, base, tree, treeParent, branch string) ([]LinkedTurn, error) {
 	infos, err := repo.Commits(ctx, shas)
 	if err != nil {
 		return nil, err
@@ -209,9 +237,13 @@ func LinkCommits(ctx context.Context, repo *git.Repository, turns []Turn, rewrit
 			missing = append(missing, sha)
 		}
 	}
+	// The branch cannot have existed before the commit it started from.
+	if git.IsObjectName(base) {
+		missing = append(missing, base)
+	}
 	outside, err := repo.Commits(ctx, missing)
 	if err != nil {
 		return nil, err
 	}
-	return LinkTurns(turns, rewrites, steps, outside, branch), nil
+	return LinkTurns(turns, rewrites, steps, outside, branch, outside[base].Date), nil
 }
