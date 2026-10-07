@@ -264,17 +264,27 @@ function App() {
       if (!controller.signal.aborted) setLoading(false);
     }
   }
+  // The worktree holding a branch's uncommitted changes: wherever it is
+  // checked out, or the opened worktree for a detached HEAD.
+  const worktreeOf = (branch: string) =>
+    branch
+      ? info?.branches.find((b) => b.name === branch)?.worktree
+      : info?.worktrees.find((w) => w.current && w.detached)?.path;
   const chooseBranch = (branch: string) =>
     void load({
       ...selection,
       branch,
       count: 1,
-      // Uncommitted changes only exist on the checked-out branch.
-      uncommitted: selection.uncommitted && branch === info?.currentBranch,
+      uncommitted: selection.uncommitted && !!worktreeOf(branch),
       base: "",
       head: "",
     });
-  const onCheckedOutBranch = !!info && selection.branch === info.currentBranch;
+  const branchWorktree = worktreeOf(selection.branch);
+  const onCheckedOutBranch = !!branchWorktree;
+  const branchDirty = info?.worktrees.some(
+    (w) => w.path === branchWorktree && w.dirty,
+  );
+  const folderName = (path: string) => path.split(/[\\/]/).pop() || path;
   const minCount = selection.uncommitted ? 0 : 1;
   const changeCount = (count: number) =>
     void load({
@@ -508,7 +518,11 @@ function App() {
                       {info?.branches.map((branch) => (
                         <option key={branch.name} value={branch.name}>
                           {branch.name}
-                          {branch.current ? " (checked out)" : ""}
+                          {branch.current
+                            ? " (checked out)"
+                            : branch.worktree
+                              ? ` (worktree: ${folderName(branch.worktree)})`
+                              : ""}
                         </option>
                       ))}
                     </select>
@@ -559,8 +573,8 @@ function App() {
                 className={`uncommitted-toggle${onCheckedOutBranch ? "" : " unavailable"}`}
                 title={
                   onCheckedOutBranch
-                    ? "End the diff at your working tree instead of the last commit"
-                    : "Uncommitted changes belong to the checked-out branch"
+                    ? `End the diff at the working tree in ${branchWorktree} instead of the last commit`
+                    : "This branch is not checked out in any worktree"
                 }
               >
                 <input
@@ -580,7 +594,7 @@ function App() {
                 />
                 <span>
                   Uncommitted
-                  {onCheckedOutBranch && info?.dirty && (
+                  {branchDirty && (
                     <span
                       className="dirty-dot"
                       title="Has uncommitted changes"
@@ -641,7 +655,10 @@ function App() {
                       : "."}
                 </>
               )}
-              {comparison?.worktree && " Ends with your uncommitted changes."}
+              {comparison?.worktree &&
+                (comparison.worktreePath
+                  ? ` Ends with the uncommitted changes in ${comparison.worktreePath}.`
+                  : " Ends with your uncommitted changes.")}
             </p>
           )}
           {error && (

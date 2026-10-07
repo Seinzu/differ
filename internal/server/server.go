@@ -38,6 +38,7 @@ func New(config Config, assets fs.FS) http.Handler {
 		}
 		q := r.URL.Query()
 		base, head := q.Get("base"), q.Get("head")
+		checkout := repo
 		var rg *git.Range
 		if base == "" && head == "" {
 			// Without explicit refs, review a branch against the default branch.
@@ -54,17 +55,31 @@ func New(config Config, assets fs.FS) http.Handler {
 			}
 			base, head = rg.Base, rg.Head
 			if q.Get("uncommitted") == "1" {
-				if current := repo.CurrentBranch(r.Context()); rg.Branch != current {
-					fail(w, fmt.Errorf("Uncommitted changes belong to the checked-out branch, not %s", rg.Branch))
+				// Uncommitted changes live in whichever worktree has the branch
+				// checked out, which need not be the one that was opened.
+				path, err := repo.WorktreeFor(r.Context(), rg.Branch)
+				if err == nil && path == "" {
+					err = fmt.Errorf("%s is not checked out in any worktree, so it has no uncommitted changes", rg.Branch)
+				}
+				if err != nil {
+					fail(w, err)
+					return
+				}
+				if checkout, err = git.Open(r.Context(), path); err != nil {
+					fail(w, err)
 					return
 				}
 				head = git.Worktree
 			}
 		}
-		comparison, err := repo.Compare(r.Context(), base, head)
+		comparison, err := checkout.Compare(r.Context(), base, head)
 		if err != nil {
 			fail(w, err)
 			return
+		}
+		if checkout.Path != repo.Path {
+			comparison.WorktreePath = checkout.Path
+			comparison.Repository = repo.Path
 		}
 		comparison.Range = rg
 		writeJSON(w, 200, comparison)
