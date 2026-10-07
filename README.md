@@ -9,20 +9,28 @@ Requires **Go 1.24+**, **Node.js 20.19+**, and **Git** on your PATH.
 ```sh
 npm ci
 make build
-./bin/differ -repo /path/to/working-copy BASE_SHA HEAD_SHA
+./bin/differ
 ```
 
-Open **http://127.0.0.1:7331**. You can change the working copy and both refs in the UI. Full or abbreviated SHAs, branches, tags, and expressions such as `HEAD~3` are supported.
+Open **http://127.0.0.1:7331**. Started inside a Git working copy, Differ opens it; started anywhere else, it asks you to choose one. Use the **Repository** button at any time to browse your folders (Git repositories are marked) or reopen a recent repository.
 
-The resulting binary embeds the frontend, so Node.js is only needed to build it. You can copy the binary elsewhere and run it from any Git working copy:
+The resulting binary embeds the frontend, so Node.js is only needed to build it. You can copy the binary elsewhere and run it from anywhere:
 
 ```sh
-/path/to/differ HEAD~3 HEAD
-# Or set the initial refs and port explicitly:
+/path/to/differ -repo /path/to/working-copy
+# Or set explicit refs and port:
 /path/to/differ -repo . -base main -head feature -addr 127.0.0.1:8080
+/path/to/differ HEAD~3 HEAD
 ```
 
-The default comparison is `HEAD~1` to `HEAD`. A repository with only one commit needs another commit before that default comparison is possible. An empty or invalid working copy shows a setup/error state; no sample changes are substituted.
+## Choosing what to review
+
+- **Branch:** pick any local branch (the checked-out branch is the default). A branch is compared with its merge base on the default branch (`main`, then `master`, then the branch `origin/HEAD` names), so only the branch's own commits appear even when `main` has moved on.
+- **Latest commits:** on the default branch itself, on a branch with no commits beyond it, or in a repository without a default branch, Differ shows the latest commit. Use the stepper to widen the range; once it covers every first-parent commit, the comparison starts from the empty tree.
+- **Uncommitted:** on the checked-out branch, end the diff at your working tree instead of the last commit. Tracked changes (staged or not) and untracked files are included; ignored files are not. In commit-by-commit review, the uncommitted changes appear as a final **Working tree** step. **Refresh** takes a new snapshot. With **Latest commits** set to 0, only the uncommitted changes are shown.
+- **Custom refs:** compare any two commits. Full or abbreviated SHAs, branches, tags, and expressions such as `HEAD~3` are supported; `:worktree` as the head means the working tree.
+
+The current selection is kept in the URL, so **Copy local link** reopens the same view. An empty or invalid working copy shows a setup/error state; no sample changes are substituted.
 
 ## Review behavior
 
@@ -35,9 +43,9 @@ The default comparison is `HEAD~1` to `HEAD`. A repository with only one commit 
 - Stats describe the original comparison, even when whitespace is ignored. Binary files and submodule changes show metadata instead of a text preview.
 - Files load as they approach the viewport. Text previews are limited to 2 MB per blob, 4 MB per patch, and 10,000 patch lines. Larger files show an explicit notice. Individual Git commands have a 30-second timeout and 32 MB output limit.
 
-Git remains the source of truth. Differ does not check out commits, modify files, stage changes, fetch, push, or create commits. Uncommitted working-tree changes are outside the comparison. Git external diff and text conversion commands are disabled.
+Git remains the source of truth. Differ does not check out commits, modify files, stage changes, fetch, push, or create commits. To review uncommitted changes, it stages the working tree into a temporary copy of the index and records it as a tree object; your index and files are untouched, and the unreferenced objects are removed by Git's normal garbage collection. Git external diff and text conversion commands are disabled.
 
-The server binds only to loopback addresses and rejects cross-origin API requests and non-local hostnames. It has access to working copies readable by the user running it. Local links include the working-copy path and only work on a machine with that path and a running Differ server.
+The server binds only to loopback addresses and rejects cross-origin API requests and non-local hostnames. It has access to working copies readable by the user running it, and the repository chooser lists folder names (never file contents) the user can read. Local links include the working-copy path and only work on a machine with that path and a running Differ server.
 
 ## GitHub releases
 

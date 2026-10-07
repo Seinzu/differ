@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 )
@@ -40,5 +42,30 @@ func TestLocalRequestBoundary(t *testing.T) {
 	handler.ServeHTTP(res, httptest.NewRequest("GET", "http://localhost/", nil))
 	if res.Code != 200 || res.Body.String() != "Differ UI" {
 		t.Fatalf("missing UI: %d %s", res.Code, res.Body)
+	}
+}
+
+func TestBrowse(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"repo/.git", "plain", ".hidden"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), nil, 0644); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := browse(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Entries) != 2 || listing.Entries[0].Name != "plain" || listing.Entries[0].Repository || listing.Entries[1].Name != "repo" || !listing.Entries[1].Repository {
+		t.Fatalf("listing: %+v", listing.Entries)
+	}
+	if listing.Parent != filepath.Dir(dir) || listing.Repository {
+		t.Fatalf("listing: %+v", listing)
+	}
+	if _, err := browse("relative/path"); err == nil {
+		t.Fatal("accepted a relative path")
 	}
 }

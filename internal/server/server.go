@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
@@ -27,12 +28,59 @@ func New(config Config, assets fs.FS) http.Handler {
 			fail(w, err)
 			return
 		}
-		comparison, err := repo.Compare(r.Context(), r.URL.Query().Get("base"), r.URL.Query().Get("head"))
+		q := r.URL.Query()
+		base, head := q.Get("base"), q.Get("head")
+		var rg *git.Range
+		if base == "" && head == "" {
+			// Without explicit refs, review a branch against the default branch.
+			count := 1
+			if q.Get("count") != "" {
+				if count, err = strconv.Atoi(q.Get("count")); err != nil {
+					http.Error(w, "Invalid count", 400)
+					return
+				}
+			}
+			if rg, err = repo.DefaultRange(r.Context(), q.Get("branch"), count); err != nil {
+				fail(w, err)
+				return
+			}
+			base, head = rg.Base, rg.Head
+			if q.Get("uncommitted") == "1" {
+				if current := repo.CurrentBranch(r.Context()); rg.Branch != current {
+					fail(w, fmt.Errorf("Uncommitted changes belong to the checked-out branch, not %s", rg.Branch))
+					return
+				}
+				head = git.Worktree
+			}
+		}
+		comparison, err := repo.Compare(r.Context(), base, head)
 		if err != nil {
 			fail(w, err)
 			return
 		}
+		comparison.Range = rg
 		writeJSON(w, 200, comparison)
+	})
+	mux.HandleFunc("GET /api/repo", func(w http.ResponseWriter, r *http.Request) {
+		repo, err := git.Open(r.Context(), repository(r, config))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		info, err := repo.Info(r.Context())
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, info)
+	})
+	mux.HandleFunc("GET /api/browse", func(w http.ResponseWriter, r *http.Request) {
+		listing, err := browse(r.URL.Query().Get("path"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, listing)
 	})
 	mux.HandleFunc("GET /api/file", func(w http.ResponseWriter, r *http.Request) {
 		repo, err := git.Open(r.Context(), repository(r, config))

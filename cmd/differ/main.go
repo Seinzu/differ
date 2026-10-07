@@ -15,14 +15,15 @@ import (
 	"syscall"
 	"time"
 
+	"differ/internal/git"
 	"differ/internal/server"
 	"differ/web"
 )
 
 func main() {
 	repo := flag.String("repo", ".", "Path to a local Git working copy")
-	base := flag.String("base", "HEAD~1", "Default base commit or ref")
-	head := flag.String("head", "HEAD", "Default head commit or ref")
+	base := flag.String("base", "", "Default base commit or ref (default: the branch's merge base with main)")
+	head := flag.String("head", "", "Default head commit or ref (default: the checked-out branch)")
 	addr := flag.String("addr", "127.0.0.1:7331", "Loopback address to listen on")
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "Usage: differ [flags] [base-sha head-sha]")
@@ -43,6 +44,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	explicitRepo := false
+	flag.Visit(func(f *flag.Flag) { explicitRepo = explicitRepo || f.Name == "repo" })
+	if r, err := git.Open(context.Background(), root); err == nil {
+		root = r.Path
+	} else if !explicitRepo {
+		// Started outside a working copy: choose one in the browser instead.
+		root = ""
+	}
+	if (*base == "") != (*head == "") {
+		log.Fatal("Set both -base and -head, or neither")
+	}
 	assets, err := fs.Sub(web.Assets, "dist")
 	if err != nil {
 		log.Fatal(err)
@@ -62,6 +74,9 @@ func main() {
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
 	}()
+	if root == "" {
+		root = "none yet; choose one in the browser"
+	}
 	fmt.Printf("Differ is ready at http://%s\nRepository: %s\n", listener.Addr(), root)
 	if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
