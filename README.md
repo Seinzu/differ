@@ -47,6 +47,33 @@ Git remains the source of truth. Differ does not check out commits, modify files
 
 The server binds only to loopback addresses and rejects cross-origin API requests and non-local hostnames. It has access to working copies readable by the user running it, and the repository chooser lists folder names (never file contents) the user can read. Local links include the working-copy path and only work on a machine with that path and a running Differ server.
 
+## Claude Code conversations
+
+Differ can record the prompts you give Claude Code in a repository, and Claude's responses, then show them beside the commits they produced.
+
+```sh
+differ install-hooks -repo /path/to/repo          # shared: .claude/settings.json
+differ install-hooks -repo /path/to/repo -local   # personal: .claude/settings.local.json
+```
+
+This adds `UserPromptSubmit` and `Stop` hooks that run `differ hook claude`, plus a Git `post-rewrite` hook (in `core.hooksPath` if set). An existing `post-rewrite` hook is left unchanged, and the line to add is printed instead. The hooks run `differ` from your `PATH` when it is there, otherwise the absolute path of the binary you installed them with (use `-command` to choose). If Differ is missing, they do nothing, and capture errors never block Claude or Git. Commit `.claude/settings.json` to share the hooks with collaborators who also use Differ.
+
+Each **turn** (one prompt and the full text response to it, excluding subagents) is stored in a SQLite database shared by all repositories: `$DIFFER_DB`, or `differ/conversations.db` in your user configuration directory (`~/Library/Application Support` on macOS, `~/.config` on Linux). Run the server with `-db` to read a different file. Prompts and responses are stored in plain text on your machine; nothing is sent anywhere. A turn also records:
+
+- the branch, and `HEAD` when the prompt was submitted and when Claude finished;
+- each file Claude's editing tools touched, with the blob SHA of its content when the turn ended;
+- the repository's shared Git directory, so linked worktrees share history.
+
+### Linking turns to commits
+
+The **Conversations** tab lists the turns linked to the commits under review. Choose a commit chip to open that commit, or use the turn count in commit-by-commit review to see a commit's turns. Rebases change commit SHAs and committer dates, so links use evidence that survives them, strongest first:
+
+1. **Committed during the turn** (solid chip): commits between the turn's starting and ending `HEAD`. When an amend or rebase rewrites those commits, the `post-rewrite` hook records the old and new SHAs, and Differ follows the chain.
+2. **Same content** (blue chip): the commit leaves a file the turn edited with exactly the content the turn ended with. This needs no hook, so it also covers rebases done elsewhere, as long as the content was not changed.
+3. **Same files, later** (dashed chip): when nothing stronger matches, the earliest commit *authored* after the turn that changes a file the turn edited. Rebases keep author dates by default, so this survives them too.
+
+Uncommitted changes are linked the same way when the working tree ends the comparison. Turns without a link stay available through **Include unlinked turns**.
+
 ## GitHub releases
 
 The **Release macOS (Apple Silicon)** workflow runs only through `workflow_dispatch`; pushes and tags do not trigger it. Once the workflow is on the default branch, open **Actions → Release macOS (Apple Silicon) → Run workflow**, select the branch to build, and enter a new tag such as `v0.1.0`. Optionally mark it as a prerelease.
@@ -85,7 +112,7 @@ make test
 go vet ./...
 ```
 
-Go integration tests create temporary repositories and exercise ancestry, reverse and divergent comparisons, merges, root commits, renames, binary files, odd filenames, whitespace, and preview limits. Frontend tests cover split-diff alignment and inline changed spans.
+Go integration tests create temporary repositories and exercise ancestry, reverse and divergent comparisons, merges, root commits, renames, binary files, odd filenames, whitespace, preview limits, branch ranges, working-tree snapshots, conversation capture, and links that survive rebases. Frontend tests cover split-diff alignment and inline changed spans.
 
 The **CI** workflow runs on pull requests and pushes to `main`. It checks Prettier and Go formatting, TypeScript types, frontend tests, `go vet`, Go tests with the race detector, and the final application build. The frontend is built before Go checks because Go embeds its output. Superseded runs for the same pull request or branch are cancelled.
 

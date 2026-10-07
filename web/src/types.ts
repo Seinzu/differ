@@ -78,3 +78,26 @@ export interface Listing {
   entries: DirEntry[];
   truncated: boolean;
 }
+export interface ConversationLink {
+  sha: string;
+  match: "commit" | "content" | "path";
+}
+export interface Turn {
+  id: number;
+  sessionId: string;
+  worktree: string;
+  branch: string;
+  headBefore: string;
+  headAfter: string;
+  prompt: string;
+  response: string;
+  files: { path: string; blob: string }[];
+  promptedAt: string;
+  respondedAt?: string;
+  links: ConversationLink[];
+}
+export interface ConversationList {
+  enabled: boolean;
+  database: string;
+  turns: Turn[];
+}

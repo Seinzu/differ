@@ -16,6 +16,7 @@ import {
   GitCommitHorizontal,
   GitCompareArrows,
   LoaderCircle,
+  MessageSquare,
   Minus,
   PanelLeftClose,
   PanelLeftOpen,
@@ -26,8 +27,16 @@ import {
   X,
 } from "lucide-react";
 import hljs from "highlight.js/lib/common";
-import type { ChangedFile, Comparison, Config, Patch, RepoInfo } from "./types";
+import type {
+  ChangedFile,
+  Comparison,
+  Config,
+  ConversationList,
+  Patch,
+  RepoInfo,
+} from "./types";
 import { RepoPicker, rememberRepository } from "./RepoPicker";
+import { Conversations } from "./Conversations";
 import { api } from "./api";
 import { changedSpan, parsePatch, toUnifiedRows, type Line } from "./diff";
 import "./style.css";
@@ -89,7 +98,12 @@ function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [comparison, setComparison] = useState<Comparison>();
   const [viewComparison, setViewComparison] = useState<Comparison>();
-  const [mode, setMode] = useState<"total" | "commits">("total");
+  const [mode, setMode] = useState<"total" | "commits" | "conversations">(
+    "total",
+  );
+  const [conversations, setConversations] = useState<ConversationList>();
+  const [conversationsError, setConversationsError] = useState("");
+  const [conversationCommit, setConversationCommit] = useState("");
   const [commitIndex, setCommitIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [commitLoading, setCommitLoading] = useState(false);
@@ -126,6 +140,47 @@ function App() {
     ? `differ:review:${active.repository}:${active.base}:${active.head}`
     : "";
   const range = comparison?.range;
+  // Turns linked to each commit in this comparison, for counts and badges.
+  const linkedTurns = useMemo(() => {
+    const shas = new Set(comparison?.commits.map((c) => c.sha));
+    const byCommit = new Map<string, number>();
+    let size = 0;
+    for (const turn of conversations?.turns ?? []) {
+      const links = turn.links.filter((link) => shas.has(link.sha));
+      if (links.length) size++;
+      for (const link of links)
+        byCommit.set(link.sha, (byCommit.get(link.sha) ?? 0) + 1);
+    }
+    return { size, byCommit };
+  }, [comparison, conversations]);
+  const commitTurns = activeCommit
+    ? (linkedTurns.byCommit.get(activeCommit.sha) ?? 0)
+    : 0;
+
+  useEffect(() => {
+    if (!comparison) return;
+    const controller = new AbortController();
+    const committed = comparison.commits.filter((c) => !c.uncommitted);
+    const worktree = comparison.commits.find((c) => c.uncommitted);
+    setConversations(undefined);
+    setConversationsError("");
+    api<ConversationList>(
+      "conversations",
+      {
+        repo: comparison.repository,
+        commits: committed.map((c) => c.sha).join(","),
+        ...(worktree
+          ? { tree: worktree.sha, treeParent: worktree.parents[0] }
+          : {}),
+      },
+      controller.signal,
+    )
+      .then(setConversations)
+      .catch((e) => {
+        if (!controller.signal.aborted) setConversationsError(e.message);
+      });
+    return () => controller.abort();
+  }, [comparison]);
 
   useEffect(() => {
     try {
@@ -633,6 +688,22 @@ function App() {
                   Commit by commit
                   <span className="count">{comparison.commits.length}</span>
                 </button>
+                <button
+                  role="tab"
+                  aria-selected={mode === "conversations"}
+                  title="Claude Code prompts and responses linked to these commits"
+                  className={mode === "conversations" ? "selected" : ""}
+                  onClick={() => {
+                    setConversationCommit("");
+                    setMode("conversations");
+                  }}
+                >
+                  <MessageSquare size={17} />
+                  Conversations
+                  {conversations?.enabled && (
+                    <span className="count">{linkedTurns.size}</span>
+                  )}
+                </button>
               </div>
               <span className="comparison-range">
                 <code>{short(comparison.base)}</code>
@@ -675,6 +746,19 @@ function App() {
                     ))}
                   </select>
                 </div>
+                {!!commitTurns && (
+                  <button
+                    className="button subtle"
+                    title="Claude Code turns linked to this commit"
+                    onClick={() => {
+                      setConversationCommit(activeCommit.sha);
+                      setMode("conversations");
+                    }}
+                  >
+                    <MessageSquare size={14} />
+                    {commitTurns} {commitTurns === 1 ? "turn" : "turns"}
+                  </button>
+                )}
                 <span className="commit-author">
                   {activeCommit.uncommitted
                     ? "Not committed yet"
@@ -708,218 +792,243 @@ function App() {
                 </button>
               </div>
             )}
-            <div className="review-toolbar">
-              <button
-                type="button"
-                className="button subtle file-tree-toggle"
-                aria-label={
-                  sidebarCollapsed ? "Show file tree" : "Hide file tree"
-                }
-                title={sidebarCollapsed ? "Show file tree" : "Hide file tree"}
-                aria-expanded={!sidebarCollapsed}
-                aria-controls="changed-files-sidebar"
-                onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-              >
-                {sidebarCollapsed ? (
-                  <PanelLeftOpen size={16} />
-                ) : (
-                  <PanelLeftClose size={16} />
-                )}
-              </button>
-              <div className="change-summary">
-                <strong>
-                  {files.length} changed {files.length === 1 ? "file" : "files"}
-                </strong>
-                {active && (
-                  <Stats
-                    additions={active.additions}
-                    deletions={active.deletions}
-                  />
-                )}
-              </div>
-              <div className="review-progress">
-                <span>
-                  {reviewedCount} / {files.length} viewed
-                </span>
-                <progress
-                  value={reviewedCount}
-                  max={files.length || 1}
-                  aria-label="Files reviewed"
-                />
-              </div>
-              <div
-                className="diff-view-switch"
-                role="group"
-                aria-label="Diff view"
-              >
-                <button
-                  type="button"
-                  aria-pressed={diffLayout === "split"}
-                  title="Side-by-side diff"
-                  onClick={() => setDiffLayout("split")}
-                >
-                  Split
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={diffLayout === "unified"}
-                  onClick={() => setDiffLayout("unified")}
-                >
-                  Unified
-                </button>
-              </div>
-              <details className="settings">
-                <summary className="button subtle">
-                  <Settings2 size={15} />
-                  Diff settings
-                  <ChevronDown size={13} />
-                </summary>
-                <div className="settings-menu">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={ignoreWhitespace}
-                      onChange={(e) => setIgnoreWhitespace(e.target.checked)}
-                    />
-                    Ignore whitespace
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={wrap}
-                      onChange={(e) => setWrap(e.target.checked)}
-                    />
-                    Wrap long lines
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={hideViewed}
-                      onChange={(e) => setHideViewed(e.target.checked)}
-                    />
-                    Hide viewed files
-                  </label>
-                  <label>
-                    Context lines
-                    <select
-                      aria-label="Context lines"
-                      value={context}
-                      onChange={(e) => setContext(e.target.value)}
-                    >
-                      <option value="3">3 lines</option>
-                      <option value="20">20 lines</option>
-                      <option value="all">Entire file</option>
-                    </select>
-                  </label>
-                </div>
-              </details>
-            </div>
-            {mode === "commits" && commitLoading ? (
-              <div className="loading-state">
-                <LoaderCircle className="spin" size={20} />
-                Loading commit…
-              </div>
+            {mode === "conversations" ? (
+              <Conversations
+                list={conversations}
+                error={conversationsError}
+                commits={comparison.commits}
+                commitFilter={conversationCommit}
+                onClearFilter={() => setConversationCommit("")}
+                onOpenCommit={(index) => {
+                  setCommitIndex(index);
+                  setMode("commits");
+                }}
+              />
             ) : (
-              <div
-                className={`review-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
-              >
-                <aside
-                  id="changed-files-sidebar"
-                  className="file-sidebar"
-                  hidden={sidebarCollapsed}
-                >
-                  <div className="file-filter">
-                    <Search size={15} />
-                    <input
-                      aria-label="Filter files"
-                      placeholder="Filter files…"
-                      value={filter}
-                      onChange={(e) => setFilter(e.target.value)}
-                    />
-                    {filter && (
-                      <button
-                        aria-label="Clear filter"
-                        className="icon-button"
-                        onClick={() => setFilter("")}
-                      >
-                        <X size={13} />
-                      </button>
+              <>
+                <div className="review-toolbar">
+                  <button
+                    type="button"
+                    className="button subtle file-tree-toggle"
+                    aria-label={
+                      sidebarCollapsed ? "Show file tree" : "Hide file tree"
+                    }
+                    title={
+                      sidebarCollapsed ? "Show file tree" : "Hide file tree"
+                    }
+                    aria-expanded={!sidebarCollapsed}
+                    aria-controls="changed-files-sidebar"
+                    onClick={() =>
+                      setSidebarCollapsed((collapsed) => !collapsed)
+                    }
+                  >
+                    {sidebarCollapsed ? (
+                      <PanelLeftOpen size={16} />
+                    ) : (
+                      <PanelLeftClose size={16} />
+                    )}
+                  </button>
+                  <div className="change-summary">
+                    <strong>
+                      {files.length} changed{" "}
+                      {files.length === 1 ? "file" : "files"}
+                    </strong>
+                    {active && (
+                      <Stats
+                        additions={active.additions}
+                        deletions={active.deletions}
+                      />
                     )}
                   </div>
-                  <div className="sidebar-label">
-                    FILES CHANGED<span>{visibleFiles.length}</span>
+                  <div className="review-progress">
+                    <span>
+                      {reviewedCount} / {files.length} viewed
+                    </span>
+                    <progress
+                      value={reviewedCount}
+                      max={files.length || 1}
+                      aria-label="Files reviewed"
+                    />
                   </div>
-                  <nav aria-label="Changed files">
-                    {visibleFiles.map((file) => (
-                      <button
-                        key={file.path}
-                        className={`file-nav ${activePath === file.path ? "active" : ""}`}
-                        title={file.path}
-                        onClick={() => navigateTo(file.path)}
-                      >
-                        <FileCode2 size={15} />
-                        <span>{file.path}</span>
-                        {reviewed.has(file.path) ? (
-                          <Check size={13} className="added" />
-                        ) : (
-                          <span className={`file-status status-${file.status}`}>
-                            {file.status}
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </nav>
-                  <div className="sidebar-footnote">
-                    <span className="connection-dot" />
-                    Read-only · Nothing leaves your machine
+                  <div
+                    className="diff-view-switch"
+                    role="group"
+                    aria-label="Diff view"
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={diffLayout === "split"}
+                      title="Side-by-side diff"
+                      onClick={() => setDiffLayout("split")}
+                    >
+                      Split
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={diffLayout === "unified"}
+                      onClick={() => setDiffLayout("unified")}
+                    >
+                      Unified
+                    </button>
                   </div>
-                </aside>
-                <section
-                  className="diff-list"
-                  aria-label="File diffs"
-                  aria-busy={loading}
-                >
-                  {active &&
-                    visibleFiles.map((file) => (
-                      <FileCard
-                        key={`${active.base}:${active.head}:${file.path}`}
-                        file={file}
-                        comparison={active}
-                        headLabel={headLabel(
-                          active,
-                          comparison.worktree ? comparison.head : undefined,
+                  <details className="settings">
+                    <summary className="button subtle">
+                      <Settings2 size={15} />
+                      Diff settings
+                      <ChevronDown size={13} />
+                    </summary>
+                    <div className="settings-menu">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={ignoreWhitespace}
+                          onChange={(e) =>
+                            setIgnoreWhitespace(e.target.checked)
+                          }
+                        />
+                        Ignore whitespace
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={wrap}
+                          onChange={(e) => setWrap(e.target.checked)}
+                        />
+                        Wrap long lines
+                      </label>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={hideViewed}
+                          onChange={(e) => setHideViewed(e.target.checked)}
+                        />
+                        Hide viewed files
+                      </label>
+                      <label>
+                        Context lines
+                        <select
+                          aria-label="Context lines"
+                          value={context}
+                          onChange={(e) => setContext(e.target.value)}
+                        >
+                          <option value="3">3 lines</option>
+                          <option value="20">20 lines</option>
+                          <option value="all">Entire file</option>
+                        </select>
+                      </label>
+                    </div>
+                  </details>
+                </div>
+                {mode === "commits" && commitLoading ? (
+                  <div className="loading-state">
+                    <LoaderCircle className="spin" size={20} />
+                    Loading commit…
+                  </div>
+                ) : (
+                  <div
+                    className={`review-layout${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
+                  >
+                    <aside
+                      id="changed-files-sidebar"
+                      className="file-sidebar"
+                      hidden={sidebarCollapsed}
+                    >
+                      <div className="file-filter">
+                        <Search size={15} />
+                        <input
+                          aria-label="Filter files"
+                          placeholder="Filter files…"
+                          value={filter}
+                          onChange={(e) => setFilter(e.target.value)}
+                        />
+                        {filter && (
+                          <button
+                            aria-label="Clear filter"
+                            className="icon-button"
+                            onClick={() => setFilter("")}
+                          >
+                            <X size={13} />
+                          </button>
                         )}
-                        context={context}
-                        ignoreWhitespace={ignoreWhitespace}
-                        wrap={wrap}
-                        layout={diffLayout}
-                        viewed={reviewed.has(file.path)}
-                        onViewed={() => toggleViewed(file.path)}
-                      />
-                    ))}
-                  {!visibleFiles.length && (
-                    <div className="empty-files">
-                      <Check size={28} />
-                      <h2>
-                        {files.length
-                          ? "No files to show"
-                          : "No changes between these commits"}
-                      </h2>
-                      <p>
-                        {files.length
-                          ? "Adjust your filter or show viewed files in diff settings."
-                          : "The two snapshots have identical contents."}
-                      </p>
-                    </div>
-                  )}
-                  {!!visibleFiles.length && (
-                    <div className="end-note">
-                      <Check size={14} />
-                      You’ve reached the end of this diff.
-                    </div>
-                  )}
-                </section>
-              </div>
+                      </div>
+                      <div className="sidebar-label">
+                        FILES CHANGED<span>{visibleFiles.length}</span>
+                      </div>
+                      <nav aria-label="Changed files">
+                        {visibleFiles.map((file) => (
+                          <button
+                            key={file.path}
+                            className={`file-nav ${activePath === file.path ? "active" : ""}`}
+                            title={file.path}
+                            onClick={() => navigateTo(file.path)}
+                          >
+                            <FileCode2 size={15} />
+                            <span>{file.path}</span>
+                            {reviewed.has(file.path) ? (
+                              <Check size={13} className="added" />
+                            ) : (
+                              <span
+                                className={`file-status status-${file.status}`}
+                              >
+                                {file.status}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </nav>
+                      <div className="sidebar-footnote">
+                        <span className="connection-dot" />
+                        Read-only · Nothing leaves your machine
+                      </div>
+                    </aside>
+                    <section
+                      className="diff-list"
+                      aria-label="File diffs"
+                      aria-busy={loading}
+                    >
+                      {active &&
+                        visibleFiles.map((file) => (
+                          <FileCard
+                            key={`${active.base}:${active.head}:${file.path}`}
+                            file={file}
+                            comparison={active}
+                            headLabel={headLabel(
+                              active,
+                              comparison.worktree ? comparison.head : undefined,
+                            )}
+                            context={context}
+                            ignoreWhitespace={ignoreWhitespace}
+                            wrap={wrap}
+                            layout={diffLayout}
+                            viewed={reviewed.has(file.path)}
+                            onViewed={() => toggleViewed(file.path)}
+                          />
+                        ))}
+                      {!visibleFiles.length && (
+                        <div className="empty-files">
+                          <Check size={28} />
+                          <h2>
+                            {files.length
+                              ? "No files to show"
+                              : "No changes between these commits"}
+                          </h2>
+                          <p>
+                            {files.length
+                              ? "Adjust your filter or show viewed files in diff settings."
+                              : "The two snapshots have identical contents."}
+                          </p>
+                        </div>
+                      )}
+                      {!!visibleFiles.length && (
+                        <div className="end-note">
+                          <Check size={14} />
+                          You’ve reached the end of this diff.
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                )}
+              </>
             )}
           </>
         ) : (

@@ -2,14 +2,18 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"differ/internal/conversations"
 	"differ/internal/git"
 )
 
@@ -17,7 +21,11 @@ type Config struct {
 	Repository string `json:"repository"`
 	Base       string `json:"base"`
 	Head       string `json:"head"`
+	// Database holds captured Claude Code conversations.
+	Database string `json:"-"`
 }
+
+const maxLinkedCommits = 2000
 
 func New(config Config, assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
@@ -73,6 +81,19 @@ func New(config Config, assets fs.FS) http.Handler {
 			return
 		}
 		writeJSON(w, 200, info)
+	})
+	mux.HandleFunc("GET /api/conversations", func(w http.ResponseWriter, r *http.Request) {
+		repo, err := git.Open(r.Context(), repository(r, config))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		result, err := linkedConversations(r, repo, config.Database)
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, result)
 	})
 	mux.HandleFunc("GET /api/browse", func(w http.ResponseWriter, r *http.Request) {
 		listing, err := browse(r.URL.Query().Get("path"))
@@ -160,4 +181,67 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+type conversationList struct {
+	Enabled  bool                       `json:"enabled"`
+	Database string                     `json:"database"`
+	Turns    []conversations.LinkedTurn `json:"turns"`
+}
+
+// linkedConversations returns the repository's captured turns linked to the
+// commits listed in the commits parameter (oldest first) and, optionally, a
+// working-tree snapshot given as tree and its parent commit as treeParent.
+func linkedConversations(r *http.Request, repo *git.Repository, database string) (*conversationList, error) {
+	result := &conversationList{Database: database, Turns: []conversations.LinkedTurn{}}
+	store, err := conversations.Open(database, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return result, nil
+	} else if err != nil {
+		return nil, err
+	}
+	defer store.Close()
+	result.Enabled = true
+	q := r.URL.Query()
+	var shas []string
+	if q.Get("commits") != "" {
+		shas = strings.Split(q.Get("commits"), ",")
+	}
+	if len(shas) > maxLinkedCommits {
+		shas = shas[len(shas)-maxLinkedCommits:]
+	}
+	infos, err := repo.Commits(r.Context(), shas)
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]git.CommitInfo, 0, len(shas)+1)
+	for _, sha := range shas {
+		if info, ok := infos[sha]; ok {
+			steps = append(steps, info)
+		}
+	}
+	if tree, parent := q.Get("tree"), q.Get("treeParent"); tree != "" {
+		if !git.IsObjectName(tree) || !git.IsObjectName(parent) {
+			return nil, errors.New("Invalid working-tree snapshot")
+		}
+		changes, err := repo.TreeChanges(r.Context(), parent, tree)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, git.CommitInfo{SHA: tree, Parents: []string{parent}, Date: time.Now(), Changes: changes})
+	}
+	gitDir, err := repo.CommonDir(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	turns, err := store.Turns(r.Context(), gitDir, 500)
+	if err != nil {
+		return nil, err
+	}
+	rewrites, err := store.Rewrites(r.Context(), gitDir)
+	if err != nil {
+		return nil, err
+	}
+	result.Turns = conversations.LinkTurns(turns, rewrites, steps)
+	return result, nil
 }

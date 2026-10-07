@@ -15,18 +15,31 @@ import (
 	"syscall"
 	"time"
 
+	"differ/internal/conversations"
 	"differ/internal/git"
 	"differ/internal/server"
 	"differ/web"
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "hook":
+			os.Exit(runHook(os.Args[2:]))
+		case "install-hooks":
+			os.Exit(installHooks(os.Args[2:]))
+		}
+	}
 	repo := flag.String("repo", ".", "Path to a local Git working copy")
 	base := flag.String("base", "", "Default base commit or ref (default: the branch's merge base with main)")
 	head := flag.String("head", "", "Default head commit or ref (default: the checked-out branch)")
 	addr := flag.String("addr", "127.0.0.1:7331", "Loopback address to listen on")
+	db := flag.String("db", conversations.DefaultPath(), "SQLite database of captured Claude Code conversations ($DIFFER_DB)")
 	flag.Usage = func() {
-		fmt.Fprintln(flag.CommandLine.Output(), "Usage: differ [flags] [base-sha head-sha]")
+		out := flag.CommandLine.Output()
+		fmt.Fprintln(out, "Usage: differ [flags] [base-sha head-sha]")
+		fmt.Fprintln(out, "       differ install-hooks [-repo path] [-local]   capture Claude Code conversations")
+		fmt.Fprintln(out, "       differ hook (claude | post-rewrite KIND)     run by the installed hooks")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -59,7 +72,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &http.Server{Addr: *addr, Handler: server.New(server.Config{Repository: root, Base: *base, Head: *head}, assets), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	srv := &http.Server{Addr: *addr, Handler: server.New(server.Config{Repository: root, Base: *base, Head: *head, Database: *db}, assets), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		log.Fatalf("Could not start Differ on %s: %v", srv.Addr, err)

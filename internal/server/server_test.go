@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"testing/fstest"
@@ -67,5 +68,23 @@ func TestBrowse(t *testing.T) {
 	}
 	if _, err := browse("relative/path"); err == nil {
 		t.Fatal("accepted a relative path")
+	}
+}
+
+func TestConversationsWithoutDatabase(t *testing.T) {
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", "-q", dir).CombinedOutput(); err != nil {
+		t.Fatalf("%s %v", out, err)
+	}
+	database := filepath.Join(t.TempDir(), "missing.db")
+	handler := New(Config{Repository: dir, Database: database}, fstest.MapFS{})
+	res := httptest.NewRecorder()
+	handler.ServeHTTP(res, httptest.NewRequest("GET", "http://localhost/api/conversations", nil))
+	var list conversationList
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err != nil || res.Code != 200 || list.Enabled || list.Database != database || len(list.Turns) != 0 {
+		t.Fatalf("conversations: %d %s", res.Code, res.Body)
+	}
+	if _, err := os.Stat(database); err == nil {
+		t.Fatal("created the database while reading")
 	}
 }
