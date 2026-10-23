@@ -21,7 +21,8 @@ export interface Comparison {
   name: string;
   base: string;
   head: string;
-  relationship: "forward" | "reverse" | "equal" | "diverged" | "snapshot";
+  relationship:
+    "forward" | "reverse" | "equal" | "diverged" | "snapshot" | "remerge";
   commits: Commit[];
   files: ChangedFile[];
   additions: number;
@@ -29,6 +30,7 @@ export interface Comparison {
   range?: Range;
   worktree?: boolean;
   worktreePath?: string;
+  conflicts?: string[];
 }
 export interface Patch {
   patch: string;
