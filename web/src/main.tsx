@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitCommitHorizontal,
   GitCompareArrows,
+  GitMerge,
   LoaderCircle,
   MessageSquare,
   Minus,
@@ -45,6 +46,11 @@ type DiffLayout = "split" | "unified";
 
 const short = (sha: string) =>
   sha === ":empty" ? "empty tree" : sha.slice(0, 7);
+// A re-merge base is a tree Git wrote for the merge commit's parents.
+const baseLabel = (comparison: Comparison) =>
+  comparison.relationship === "remerge"
+    ? "automatic merge"
+    : short(comparison.base);
 // Working-tree snapshots are tree SHAs; name them instead of showing a hash.
 const headLabel = (comparison: Comparison, worktreeTree?: string) =>
   comparison.worktree || comparison.head === worktreeTree
@@ -105,6 +111,11 @@ function App() {
   const [conversationsError, setConversationsError] = useState("");
   const [conversationCommit, setConversationCommit] = useState("");
   const [commitIndex, setCommitIndex] = useState(0);
+  // How merge commits are shown in commit-by-commit review: against their
+  // first parent, or against Git's automatic re-merge of both parents.
+  const [mergeView, setMergeView] = useState<"first-parent" | "remerge">(
+    "first-parent",
+  );
   const [loading, setLoading] = useState(false);
   const [commitLoading, setCommitLoading] = useState(false);
   const [error, setError] = useState("");
@@ -136,6 +147,8 @@ function App() {
   const commitRequest = useRef<AbortController | undefined>(undefined);
   const active = mode === "total" ? comparison : viewComparison;
   const activeCommit = comparison?.commits[commitIndex];
+  const canRemerge = activeCommit?.parents.length === 2;
+  const remerge = canRemerge && mergeView === "remerge";
   const reviewKey = active
     ? `differ:review:${active.repository}:${active.base}:${active.head}`
     : "";
@@ -332,7 +345,7 @@ function App() {
       "compare",
       {
         repo: comparison.repository,
-        base: activeCommit.parents[0] || ":empty",
+        base: remerge ? ":remerge" : activeCommit.parents[0] || ":empty",
         head: activeCommit.sha,
       },
       controller.signal,
@@ -345,7 +358,7 @@ function App() {
         if (!controller.signal.aborted) setCommitLoading(false);
       });
     return () => controller.abort();
-  }, [mode, comparison, activeCommit]);
+  }, [mode, comparison, activeCommit, remerge]);
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(reviewKey) || "[]");
@@ -788,11 +801,35 @@ function App() {
                       day: "numeric",
                       year: "numeric",
                     })}
-                    {activeCommit.parents.length > 1
+                    {activeCommit.parents.length > 2
                       ? " · Merge · first parent"
                       : ""}
                   </small>
                 </span>
+                {canRemerge && (
+                  <div
+                    className="diff-view-switch merge-view-switch"
+                    role="group"
+                    aria-label="Merge commit view"
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={!remerge}
+                      title="Everything the merge brought in, compared with the first parent"
+                      onClick={() => setMergeView("first-parent")}
+                    >
+                      All changes
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={remerge}
+                      title="Only what changed while merging, such as conflict resolutions, compared with Git's automatic merge of both parents"
+                      onClick={() => setMergeView("remerge")}
+                    >
+                      Merge fixes
+                    </button>
+                  </div>
+                )}
                 <button
                   className="icon-button bordered"
                   aria-label="Previous commit"
@@ -809,6 +846,24 @@ function App() {
                 >
                   <ArrowRight size={16} />
                 </button>
+              </div>
+            )}
+            {mode === "commits" && remerge && viewComparison && (
+              <div className="notice merge-notice">
+                <GitMerge size={16} />
+                <div>
+                  Compared with Git re-merging{" "}
+                  <code>{short(activeCommit!.parents[0])}</code> and{" "}
+                  <code>{short(activeCommit!.parents[1])}</code>. Removed
+                  conflict markers show how each conflict was resolved.
+                  {!!viewComparison.conflicts?.length && (
+                    <ul>
+                      {viewComparison.conflicts.map((conflict) => (
+                        <li key={conflict}>{conflict}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             )}
             {mode === "conversations" ? (
@@ -1029,12 +1084,16 @@ function App() {
                           <h2>
                             {files.length
                               ? "No files to show"
-                              : "No changes between these commits"}
+                              : active?.relationship === "remerge"
+                                ? "Nothing changed during this merge"
+                                : "No changes between these commits"}
                           </h2>
                           <p>
                             {files.length
                               ? "Adjust your filter or show viewed files in diff settings."
-                              : "The two snapshots have identical contents."}
+                              : active?.relationship === "remerge"
+                                ? "The commit matches Git’s automatic merge of its parents."
+                                : "The two snapshots have identical contents."}
                           </p>
                         </div>
                       )}
@@ -1428,7 +1487,7 @@ function FileCard({
                     <th scope="col">
                       Changes{" "}
                       <code>
-                        {short(comparison.base)} → {headLabel}
+                        {baseLabel(comparison)} → {headLabel}
                       </code>
                     </th>
                   </tr>
@@ -1498,7 +1557,7 @@ function FileCard({
                           {side === "left" ? "Before" : "After"}{" "}
                           <code>
                             {side === "left"
-                              ? short(comparison.base)
+                              ? baseLabel(comparison)
                               : headLabel}
                           </code>
                         </th>
@@ -1543,7 +1602,7 @@ function FileCard({
                 <thead>
                   <tr>
                     <th colSpan={2}>
-                      Before <code>{short(comparison.base)}</code>
+                      Before <code>{baseLabel(comparison)}</code>
                     </th>
                     <th colSpan={2}>
                       After <code>{headLabel}</code>

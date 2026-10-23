@@ -1100,6 +1100,16 @@ main {
   border-radius: 6px;
   margin-top: 18px;
 }
+.merge-notice {
+  align-items: flex-start;
+}
+.merge-notice svg {
+  flex-shrink: 0;
+}
+.merge-notice ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
 .commit-bar {
   display: flex;
   align-items: center;

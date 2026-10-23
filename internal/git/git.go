@@ -30,6 +30,13 @@ func run(ctx context.Context, dir string, args ...string) ([]byte, error) {
 }
 
 func runEnv(ctx context.Context, dir string, env []string, args ...string) ([]byte, error) {
+	out, _, err := runStatus(ctx, dir, env, 0, args...)
+	return out, err
+}
+
+// runStatus is runEnv for commands that report a result through their exit
+// status: an exit code up to okStatus is returned instead of failing.
+func runStatus(ctx context.Context, dir string, env []string, okStatus int, args ...string) ([]byte, int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	args = append([]string{"--no-pager", "--literal-pathspecs", "-c", "core.quotePath=false", "-c", "diff.submodule=short", "-C", dir}, args...)
@@ -42,15 +49,19 @@ func runEnv(ctx context.Context, dir string, env []string, args ...string) ([]by
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return nil, fmt.Errorf("Git operation timed out or was cancelled: %w", ctx.Err())
+			return nil, 0, fmt.Errorf("Git operation timed out or was cancelled: %w", ctx.Err())
+		}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() > 0 && exit.ExitCode() <= okStatus {
+			return out.Bytes(), exit.ExitCode(), nil
 		}
 		message := strings.TrimSpace(stderr.String())
 		if message == "" {
 			message = err.Error()
 		}
-		return nil, fmt.Errorf("%s", message)
+		return nil, 0, fmt.Errorf("%s", message)
 	}
-	return out.Bytes(), nil
+	return out.Bytes(), 0, nil
 }
 
 // Repository is a working copy, or a bare repository (which may own linked
@@ -172,6 +183,9 @@ type Comparison struct {
 	// WorktreePath is the linked worktree the snapshot came from, when it is
 	// not the opened one.
 	WorktreePath string `json:"worktreePath,omitempty"`
+	// Conflicts lists the conflicts Git reports when it re-merges the
+	// parents of a merge commit (for a Remerge comparison).
+	Conflicts []string `json:"conflicts,omitempty"`
 }
 
 func (r *Repository) ancestor(ctx context.Context, a, b string) (bool, error) {
@@ -182,6 +196,9 @@ func (r *Repository) ancestor(ctx context.Context, a, b string) (bool, error) {
 }
 
 func (r *Repository) Compare(ctx context.Context, baseRef, headRef string) (*Comparison, error) {
+	if baseRef == Remerge {
+		return r.compareRemerge(ctx, headRef)
+	}
 	base, err := r.resolveBase(ctx, baseRef)
 	if err != nil {
 		return nil, err
