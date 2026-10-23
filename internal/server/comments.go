@@ -8,66 +8,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"sync"
-	"time"
 
 	"differ/internal/conversations"
 	"differ/internal/git"
 )
-
-// hub fans server events out to every open Differ tab.
-type hub struct {
-	mu   sync.Mutex
-	subs map[chan string]struct{}
-}
-
-func newHub() *hub { return &hub{subs: map[chan string]struct{}{}} }
-
-func (h *hub) publish(event string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for ch := range h.subs {
-		select {
-		case ch <- event:
-		default: // A tab that is not reading misses the event and refetches later.
-		}
-	}
-}
-
-// serve streams events to one tab until it disconnects or the server stops.
-func (h *hub) serve(w http.ResponseWriter, r *http.Request) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming is not supported", 500)
-		return
-	}
-	ch := make(chan string, 16)
-	h.mu.Lock()
-	h.subs[ch] = struct{}{}
-	h.mu.Unlock()
-	defer func() {
-		h.mu.Lock()
-		delete(h.subs, ch)
-		h.mu.Unlock()
-	}()
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.WriteHeader(200)
-	fmt.Fprint(w, ": connected\n\n")
-	flusher.Flush()
-	ping := time.NewTicker(25 * time.Second)
-	defer ping.Stop()
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ping.C:
-			fmt.Fprint(w, ": ping\n\n")
-		case event := <-ch:
-			fmt.Fprintf(w, "data: %s\n\n", event)
-		}
-		flusher.Flush()
-	}
-}
 
 type threadList struct {
 	// Author is the name the person reviewing comments under.
@@ -148,7 +92,6 @@ func registerComments(mux *http.ServeMux, config Config, events *hub) {
 		defer store.Close()
 		f(store)
 	}
-	mux.HandleFunc("GET /api/events", events.serve)
 	mux.HandleFunc("GET /api/threads", func(w http.ResponseWriter, r *http.Request) {
 		repo, err := git.Open(r.Context(), repository(r, config))
 		if err != nil {

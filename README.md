@@ -4,7 +4,7 @@ A local code review tool that never changes your repository. A Go server hosts a
 
 ## Run
 
-Requires **Go 1.24+**, **Node.js 20.19+**, and **Git** on your PATH.
+Requires **Go 1.25+**, **Node.js 20.19+**, and **Git** on your PATH.
 
 ```sh
 npm ci
@@ -68,6 +68,29 @@ Comment on lines, files, or the whole comparison, then reply and resolve threads
 - Open tabs update as soon as comments change, including comments made from another tab.
 
 Comments are stored in the same SQLite database as captured conversations (below), created on your first comment, and shared by all worktrees of a repository. Nothing is sent anywhere.
+
+## Agents (MCP)
+
+Differ is also an [MCP](https://modelcontextprotocol.io) server, so agents such as Claude Code can show you diffs and take part in review comments. While Differ runs, connect Claude Code to it once:
+
+```sh
+claude mcp add --transport http differ http://127.0.0.1:7331/mcp
+```
+
+Add `--scope user` to use it from every project, and change the port if you run Differ with `-addr`. Other MCP clients connect to the same Streamable HTTP endpoint. The tools:
+
+| Tool               | What it does                                                                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_current_view` | Reports what you're looking at: repository, branch, comparison, commit in commit-by-commit review, and the file in view.                                                                    |
+| `show_diff`        | Shows you a branch, a pair of refs, or a commit, optionally scrolled to a file and highlighted line. The tab you used last switches to it; with no Differ tab open, a browser window opens. |
+| `list_comments`    | Lists comment threads (open by default) with their replies, where each now appears, and the code it was written on.                                                                         |
+| `add_comment`      | Starts a thread on lines, a file, or the whole comparison. Lines must be in the diff as Differ shows it, with three lines of context.                                                       |
+| `reply_to_comment` | Replies to a thread.                                                                                                                                                                        |
+| `resolve_thread`   | Resolves or reopens a thread.                                                                                                                                                               |
+
+Comparisons are named as in the UI: a `branch` (optionally with `uncommitted` or `count`), or `base` and `head`, plus an optional `commit` within it. Without them, `list_comments` and `add_comment` use the diff on your screen, so you can say "answer my comments" and Claude finds them. Agent comments are signed "Claude" unless the agent gives another name, and appear in open tabs immediately.
+
+Each open tab tells the server which comparison it shows. The address also records the commit in commit-by-commit review, and accepts `file`, `line`, and `side` (`old` or `new`) to open at a line.
 
 ## Claude Code conversations
 
@@ -154,4 +177,4 @@ web/embed.go      Built frontend embedded into the Go binary
 
 API: `GET /api/config`, `GET /api/compare?repo=…&base=…&head=…`, and `GET /api/file?repo=…&base=…&head=…&path=…&context=3&whitespace=show`.
 
-Comments: `GET /api/threads?repo=…&base=…&head=…&branch=…` lists the threads placed in a comparison (without `base` and `head`, every thread in the repository). `POST /api/threads?repo=…` starts one from a JSON body with `base`, `head`, `branch`, `path`, `side` (`old` or `new`), `startLine`, `endLine`, `body`, and optionally `author` and `authorKind` (`user` or `agent`). `POST /api/threads/{id}/comments` replies, `PATCH /api/threads/{id}` with `{"resolved": true, "by": "…"}` resolves or reopens, and `PATCH` or `DELETE /api/comments/{id}` edits or deletes a comment. Writes with a body must send `Content-Type: application/json`, and like every API request they are refused from other origins. `GET /api/events` is a server-sent event stream that announces comment changes.
+Comments: `GET /api/threads?repo=…&base=…&head=…&branch=…` lists the threads placed in a comparison (without `base` and `head`, every thread in the repository). `POST /api/threads?repo=…` starts one from a JSON body with `base`, `head`, `branch`, `path`, `side` (`old` or `new`), `startLine`, `endLine`, `body`, and optionally `author` and `authorKind` (`user` or `agent`). `POST /api/threads/{id}/comments` replies, `PATCH /api/threads/{id}` with `{"resolved": true, "by": "…"}` resolves or reopens, and `PATCH` or `DELETE /api/comments/{id}` edits or deletes a comment. Writes with a body must send `Content-Type: application/json`, and like every API request they are refused from other origins. `GET /api/events?tab=…` is a server-sent event stream that announces comment changes and agents' navigation, and `POST /api/view` is how each tab reports what it shows. `/mcp` is the MCP endpoint.

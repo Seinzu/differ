@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,57 +31,20 @@ func New(config Config, assets fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/config", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, config) })
 	mux.HandleFunc("GET /api/compare", func(w http.ResponseWriter, r *http.Request) {
-		repo, err := git.Open(r.Context(), repository(r, config))
-		if err != nil {
-			fail(w, err)
-			return
-		}
 		q := r.URL.Query()
-		base, head := q.Get("base"), q.Get("head")
-		checkout := repo
-		var rg *git.Range
-		if base == "" && head == "" {
-			// Without explicit refs, review a branch against the default branch.
-			count := 1
-			if q.Get("count") != "" {
-				if count, err = strconv.Atoi(q.Get("count")); err != nil {
-					http.Error(w, "Invalid count", 400)
-					return
-				}
-			}
-			if rg, err = repo.DefaultRange(r.Context(), q.Get("branch"), count); err != nil {
-				fail(w, err)
+		sel := selection{Repo: repository(r, config), Base: q.Get("base"), Head: q.Get("head"), Branch: q.Get("branch"), Count: 1, Uncommitted: q.Get("uncommitted") == "1"}
+		if q.Get("count") != "" {
+			var err error
+			if sel.Count, err = strconv.Atoi(q.Get("count")); err != nil {
+				http.Error(w, "Invalid count", 400)
 				return
 			}
-			base, head = rg.Base, rg.Head
-			if q.Get("uncommitted") == "1" {
-				// Uncommitted changes live in whichever worktree has the branch
-				// checked out, which need not be the one that was opened.
-				path, err := repo.WorktreeFor(r.Context(), rg.Branch)
-				if err == nil && path == "" {
-					err = fmt.Errorf("%s is not checked out in any worktree, so it has no uncommitted changes", rg.Branch)
-				}
-				if err != nil {
-					fail(w, err)
-					return
-				}
-				if checkout, err = git.Open(r.Context(), path); err != nil {
-					fail(w, err)
-					return
-				}
-				head = git.Worktree
-			}
 		}
-		comparison, err := checkout.Compare(r.Context(), base, head)
+		comparison, err := compare(r.Context(), sel)
 		if err != nil {
 			fail(w, err)
 			return
 		}
-		if checkout.Path != repo.Path {
-			comparison.WorktreePath = checkout.Path
-			comparison.Repository = repo.Path
-		}
-		comparison.Range = rg
 		writeJSON(w, 200, comparison)
 	})
 	mux.HandleFunc("GET /api/repo", func(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +105,10 @@ func New(config Config, assets fs.FS) http.Handler {
 		}
 		writeJSON(w, 200, patch)
 	})
-	registerComments(mux, config, newHub())
+	events := newHub()
+	registerEvents(mux, events)
+	registerComments(mux, config, events)
+	registerMCP(mux, config, events)
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "Unknown API endpoint", 404) })
 	if _, err := fs.Stat(assets, "index.html"); err == nil {
 		mux.Handle("GET /", http.FileServerFS(assets))
@@ -162,7 +129,7 @@ func New(config Config, assets fs.FS) http.Handler {
 			http.Error(w, "Local requests only", 403)
 			return
 		}
-		if strings.HasPrefix(r.URL.Path, "/api/") {
+		if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/mcp" {
 			if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
 				http.Error(w, "Cross-site requests are not allowed", 403)
 				return
@@ -181,6 +148,57 @@ func New(config Config, assets fs.FS) http.Handler {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// selection names a comparison the way the UI's address does: explicit refs,
+// or the latest Count commits of a branch (its own commits when it has any
+// beyond the default branch), optionally ending at its working tree.
+type selection struct {
+	Repo, Base, Head, Branch string
+	Count                    int
+	Uncommitted              bool
+}
+
+func compare(ctx context.Context, sel selection) (*git.Comparison, error) {
+	repo, err := git.Open(ctx, sel.Repo)
+	if err != nil {
+		return nil, err
+	}
+	base, head := sel.Base, sel.Head
+	checkout := repo
+	var rg *git.Range
+	if base == "" && head == "" {
+		// Without explicit refs, review a branch against the default branch.
+		if rg, err = repo.DefaultRange(ctx, sel.Branch, sel.Count); err != nil {
+			return nil, err
+		}
+		base, head = rg.Base, rg.Head
+		if sel.Uncommitted {
+			// Uncommitted changes live in whichever worktree has the branch
+			// checked out, which need not be the one that was opened.
+			path, err := repo.WorktreeFor(ctx, rg.Branch)
+			if err == nil && path == "" {
+				err = fmt.Errorf("%s is not checked out in any worktree, so it has no uncommitted changes", rg.Branch)
+			}
+			if err != nil {
+				return nil, err
+			}
+			if checkout, err = git.Open(ctx, path); err != nil {
+				return nil, err
+			}
+			head = git.Worktree
+		}
+	}
+	comparison, err := checkout.Compare(ctx, base, head)
+	if err != nil {
+		return nil, err
+	}
+	if checkout.Path != repo.Path {
+		comparison.WorktreePath = checkout.Path
+		comparison.Repository = repo.Path
+	}
+	comparison.Range = rg
+	return comparison, nil
 }
 
 func repository(r *http.Request, config Config) string {

@@ -53,7 +53,8 @@ import {
   useThreads,
   type CommentTarget,
 } from "./Comments";
-import { api } from "./api";
+import { api, send } from "./api";
+import { onServerEvent, tabId } from "./events";
 import {
   changedSpan,
   parsePatch,
@@ -64,6 +65,12 @@ import {
 import "./style.css";
 
 type DiffLayout = "split" | "unified";
+// A place in a diff to scroll to.
+interface FocusTarget {
+  path: string;
+  line?: number;
+  side?: Side;
+}
 
 const short = (sha: string) =>
   sha === ":empty" ? "empty tree" : sha.slice(0, 7);
@@ -212,16 +219,100 @@ function App() {
     [activeThreads.list],
   );
   const author = totalThreads.list?.author || "You";
-  // A file to scroll to once the total diff has rendered.
-  const [pendingPath, setPendingPath] = useState("");
+  // A file, and optionally a line, to scroll to once the diff showing it has
+  // rendered: from the Comments tab or from a link an agent opened.
+  const [pending, setPending] = useState<FocusTarget>();
+  const pendingShown =
+    !!pending &&
+    !!active?.files.some(
+      (f) => f.path === pending.path || f.oldPath === pending.path,
+    );
   useEffect(() => {
-    if (!pendingPath || mode !== "total") return;
-    const timer = setTimeout(() => {
-      navigateTo(pendingPath);
-      setPendingPath("");
-    });
+    if (!pending || !pendingShown) return;
+    const timer = setTimeout(() => navigateTo(pending.path));
+    if (!pending.line) setPending(undefined);
     return () => clearTimeout(timer);
-  }, [pendingPath, mode]);
+  }, [pending, pendingShown]);
+  // A link's commit and file, applied once its comparison has loaded.
+  const deepLink = useRef<{ commit: string; focus?: FocusTarget }>(undefined);
+  // The file at the top of the diff, reported as the one in view.
+  const [fileInView, setFileInView] = useState("");
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const update = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const card = [
+          ...document.querySelectorAll<HTMLElement>(".file-card"),
+        ].find((c) => c.getBoundingClientRect().bottom > 120);
+        const id = card?.id.replace(/^file-/, "");
+        setFileInView(id ? decodeURIComponent(id) : "");
+      }, 300);
+    };
+    window.addEventListener("scroll", update, { passive: true });
+    update();
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("scroll", update);
+    };
+  }, [active]);
+  // Tell the server what this tab shows, so agents can see it and send this
+  // tab to other diffs; the most recently used tab is the one they reach.
+  const visibleCommit = mode === "commits" ? activeCommit?.sha : undefined;
+  const report = useRef(() => {});
+  report.current = () => {
+    if (!comparison) return;
+    const view =
+      mode === "commits" && viewComparison ? viewComparison : comparison;
+    void send("POST", "view", {
+      tab: tabId,
+      query: location.search,
+      repository: comparison.repository,
+      branch: comparison.range?.branch ?? "",
+      base: comparison.base,
+      head: comparison.head,
+      mode,
+      commit: visibleCommit ?? "",
+      viewBase: view.base,
+      viewHead: view.head,
+      file: mode === "total" || mode === "commits" ? fileInView : "",
+    }).catch(() => {
+      // Agents simply see an older view.
+    });
+  };
+  useEffect(() => {
+    if (!comparison) return;
+    const query = new URLSearchParams(location.search);
+    for (const key of ["file", "line", "side"]) query.delete(key);
+    if (visibleCommit) {
+      query.set("mode", "commits");
+      query.set("commit", visibleCommit);
+    } else {
+      query.delete("mode");
+      query.delete("commit");
+    }
+    if (`?${query}` !== location.search)
+      window.history.replaceState(null, "", `?${query}`);
+    report.current();
+  }, [comparison, viewComparison, mode, visibleCommit, fileInView]);
+  useEffect(() => {
+    const onFocus = () => {
+      if (document.visibilityState === "visible") report.current();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    const stop = onServerEvent((event) => {
+      if (event.type === "navigate" && event.tab === tabId) {
+        window.focus();
+        location.search = event.query;
+      }
+    });
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+      stop();
+    };
+  }, []);
 
   useEffect(() => {
     if (!comparison) return;
@@ -326,6 +417,16 @@ function App() {
         if (next.uncommitted) query.set("uncommitted", "1");
       }
       window.history.replaceState(null, "", `?${query}`);
+      const link = deepLink.current;
+      deepLink.current = undefined;
+      const linked = link?.commit
+        ? result.commits.findIndex((c) => c.sha === link.commit)
+        : -1;
+      if (linked >= 0) {
+        setMode("commits");
+        setCommitIndex(linked);
+      }
+      setPending(link?.focus);
     } catch (e) {
       if (!controller.signal.aborted) setError((e as Error).message);
     } finally {
@@ -365,6 +466,18 @@ function App() {
       .then((config) => {
         const query = new URLSearchParams(location.search);
         const count = Number(query.get("count") ?? "1");
+        const line = Number(query.get("line"));
+        deepLink.current = {
+          commit:
+            query.get("mode") === "commits" ? query.get("commit") || "" : "",
+          focus: query.get("file")
+            ? {
+                path: query.get("file")!,
+                line: Number.isInteger(line) && line > 0 ? line : undefined,
+                side: query.get("side") === "old" ? "old" : "new",
+              }
+            : undefined,
+        };
         const next: Selection = {
           repository: query.get("repo") ?? config.repository,
           branch: query.get("branch") ?? "",
@@ -943,7 +1056,7 @@ function App() {
                 onChanged={totalThreads.reload}
                 onOpenFile={(path) => {
                   setMode("total");
-                  setPendingPath(path);
+                  setPending({ path });
                 }}
               />
             ) : mode === "conversations" ? (
@@ -1165,6 +1278,14 @@ function App() {
                             layout={diffLayout}
                             viewed={reviewed.has(file.path)}
                             onViewed={() => toggleViewed(file.path)}
+                            focus={
+                              pending?.line &&
+                              (pending.path === file.path ||
+                                pending.path === file.oldPath)
+                                ? pending
+                                : undefined
+                            }
+                            onFocused={() => setPending(undefined)}
                             threads={activeByFile.get(file.path) ?? []}
                             author={author}
                             commentTarget={{
@@ -1386,7 +1507,12 @@ function CodeCell({
           {line?.number}
         </td>
       )}
-      <td className={`code-cell ${kind}${selected ? " selected" : ""}`}>
+      <td
+        className={`code-cell ${kind}${selected ? " selected" : ""}`}
+        data-line={
+          line ? `${side === "left" ? "old" : "new"}:${line.number}` : undefined
+        }
+      >
         {line && onComment && (
           <button
             type="button"
@@ -1466,6 +1592,8 @@ function FileCard({
   author,
   commentTarget,
   onCommentsChanged,
+  focus,
+  onFocused,
 }: {
   file: ChangedFile;
   comparison: Comparison;
@@ -1480,6 +1608,9 @@ function FileCard({
   author: string;
   commentTarget: CommentTarget;
   onCommentsChanged: () => void;
+  // A line to scroll to and highlight once the diff has loaded.
+  focus?: FocusTarget;
+  onFocused: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [visible, setVisible] = useState(false);
@@ -1525,6 +1656,22 @@ function FileCard({
       });
     return () => controller.abort();
   }, [visible, comparison, file.path, context, ignoreWhitespace, retry]);
+  useEffect(() => {
+    if (focus) setVisible(true);
+  }, [focus]);
+  useEffect(() => {
+    if (!focus?.line || !patch) return;
+    const cell = element.current?.querySelector(
+      `[data-line="${focus.side ?? "new"}:${focus.line}"]`,
+    );
+    const row = cell?.closest("tr");
+    if (row) {
+      cell!.scrollIntoView({ behavior: "smooth", block: "center" });
+      row.classList.add("flash");
+      setTimeout(() => row.classList.remove("flash"), 2500);
+    }
+    onFocused();
+  }, [focus, patch, layout]);
   const hunks = useMemo(() => parsePatch(patch?.patch ?? ""), [patch]);
   const unifiedHunks = useMemo(
     () =>
