@@ -448,3 +448,42 @@ func (r *Repository) Patch(ctx context.Context, baseRef, headRef, path string, c
 	}
 	return &Patch{Patch: string(out)}, nil
 }
+
+// SnapshotFiles is Files for any two snapshots a comparison can name, such as
+// :empty or the tree SHA of a working-tree snapshot.
+func (r *Repository) SnapshotFiles(ctx context.Context, baseRef, headRef string) ([]File, error) {
+	base, err := r.resolveTree(ctx, baseRef)
+	if err != nil {
+		return nil, err
+	}
+	head, err := r.resolveTree(ctx, headRef)
+	if err != nil {
+		return nil, err
+	}
+	return r.Files(ctx, base, head)
+}
+
+// ErrTooLarge is returned for a blob over the 2 MB text preview limit.
+var ErrTooLarge = errors.New("This file exceeds the 2 MB text preview limit")
+
+// Blob returns a blob's content, refusing blobs over the preview limit.
+func (r *Repository) Blob(ctx context.Context, oid string) (string, error) {
+	if !IsObjectName(oid) {
+		return "", fmt.Errorf("Invalid blob %q", oid)
+	}
+	size, err := run(ctx, r.Path, "cat-file", "-s", oid)
+	if err != nil {
+		return "", err
+	}
+	if n, _ := strconv.Atoi(strings.TrimSpace(string(size))); n > 2<<20 {
+		return "", ErrTooLarge
+	}
+	content, err := run(ctx, r.Path, "cat-file", "blob", oid)
+	return string(content), err
+}
+
+// UserName is the configured Git user.name, or empty.
+func (r *Repository) UserName(ctx context.Context) string {
+	out, _ := run(ctx, r.Path, "config", "user.name")
+	return strings.TrimSpace(string(out))
+}

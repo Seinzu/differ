@@ -141,6 +141,7 @@ func New(config Config, assets fs.FS) http.Handler {
 		}
 		writeJSON(w, 200, patch)
 	})
+	registerComments(mux, config, newHub())
 	mux.HandleFunc("GET /api/", func(w http.ResponseWriter, r *http.Request) { http.Error(w, "Unknown API endpoint", 404) })
 	if _, err := fs.Stat(assets, "index.html"); err == nil {
 		mux.Handle("GET /", http.FileServerFS(assets))

@@ -72,15 +72,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	srv := &http.Server{Addr: *addr, Handler: server.New(server.Config{Repository: root, Base: *base, Head: *head, Database: *db}, assets), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	srv := &http.Server{Addr: *addr, Handler: server.New(server.Config{Repository: root, Base: *base, Head: *head, Database: *db}, assets), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
+		// Requests end on shutdown, so open event streams do not hold it up.
+		BaseContext: func(net.Listener) context.Context { return ctx }}
 	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
 		log.Fatalf("Could not start Differ on %s: %v", srv.Addr, err)
 	}
 	defer listener.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)

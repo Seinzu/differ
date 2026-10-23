@@ -116,3 +116,42 @@ export interface ConversationList {
   database: string;
   turns: Turn[];
 }
+export interface ReviewComment {
+  id: number;
+  threadId: number;
+  author: string;
+  authorKind: "user" | "agent";
+  body: string;
+  createdAt: string;
+  editedAt?: string;
+}
+export type Side = "old" | "new";
+export interface Placement {
+  status: "exact" | "moved" | "outdated";
+  // The file's path in the comparison (its new path when renamed).
+  file?: string;
+  startLine?: number;
+  endLine?: number;
+}
+export interface Thread {
+  id: number;
+  // Empty for a comment on the whole comparison.
+  path: string;
+  side: Side | "";
+  // Zero for a comment on the whole file.
+  startLine: number;
+  endLine: number;
+  snippet: string;
+  base: string;
+  head: string;
+  branch: string;
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  comments: ReviewComment[];
+  placement?: Placement;
+}
+export interface ThreadList {
+  author: string;
+  threads: Thread[];
+}
