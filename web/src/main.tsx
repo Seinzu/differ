@@ -18,6 +18,8 @@ import {
   GitMerge,
   LoaderCircle,
   MessageSquare,
+  MessageSquarePlus,
+  MessagesSquare,
   Minus,
   PanelLeftClose,
   PanelLeftOpen,
@@ -35,11 +37,30 @@ import type {
   ConversationList,
   Patch,
   RepoInfo,
+  Side,
+  Thread,
 } from "./types";
 import { RepoPicker, rememberRepository } from "./RepoPicker";
 import { Conversations } from "./Conversations";
+import {
+  CommentsPanel,
+  Composer,
+  ThreadCard,
+  createThread,
+  lineLabel,
+  openThreads,
+  threadsByFile,
+  useThreads,
+  type CommentTarget,
+} from "./Comments";
 import { api } from "./api";
-import { changedSpan, parsePatch, toUnifiedRows, type Line } from "./diff";
+import {
+  changedSpan,
+  parsePatch,
+  toUnifiedRows,
+  type Line,
+  type Row,
+} from "./diff";
 import "./style.css";
 
 type DiffLayout = "split" | "unified";
@@ -104,9 +125,9 @@ function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [comparison, setComparison] = useState<Comparison>();
   const [viewComparison, setViewComparison] = useState<Comparison>();
-  const [mode, setMode] = useState<"total" | "commits" | "conversations">(
-    "total",
-  );
+  const [mode, setMode] = useState<
+    "total" | "commits" | "conversations" | "comments"
+  >("total");
   const [conversations, setConversations] = useState<ConversationList>();
   const [conversationsError, setConversationsError] = useState("");
   const [conversationCommit, setConversationCommit] = useState("");
@@ -169,6 +190,38 @@ function App() {
   const commitTurns = activeCommit
     ? (linkedTurns.byCommit.get(activeCommit.sha) ?? 0)
     : 0;
+  const totalTarget: CommentTarget | undefined = comparison && {
+    repository: comparison.repository,
+    base: comparison.base,
+    head: comparison.head,
+    branch: comparison.range?.branch,
+  };
+  const totalThreads = useThreads(totalTarget);
+  const viewThreads = useThreads(
+    mode === "commits" && viewComparison
+      ? {
+          repository: viewComparison.repository,
+          base: viewComparison.base,
+          head: viewComparison.head,
+        }
+      : undefined,
+  );
+  const activeThreads = mode === "commits" ? viewThreads : totalThreads;
+  const activeByFile = useMemo(
+    () => threadsByFile(activeThreads.list?.threads),
+    [activeThreads.list],
+  );
+  const author = totalThreads.list?.author || "You";
+  // A file to scroll to once the total diff has rendered.
+  const [pendingPath, setPendingPath] = useState("");
+  useEffect(() => {
+    if (!pendingPath || mode !== "total") return;
+    const timer = setTimeout(() => {
+      navigateTo(pendingPath);
+      setPendingPath("");
+    });
+    return () => clearTimeout(timer);
+  }, [pendingPath, mode]);
 
   useEffect(() => {
     if (!comparison) return;
@@ -736,6 +789,21 @@ function App() {
                     <span className="count">{linkedTurns.size}</span>
                   )}
                 </button>
+                <button
+                  role="tab"
+                  aria-selected={mode === "comments"}
+                  title="Open review comments on the files in this comparison"
+                  className={mode === "comments" ? "selected" : ""}
+                  onClick={() => setMode("comments")}
+                >
+                  <MessagesSquare size={17} />
+                  Comments
+                  {totalThreads.list && (
+                    <span className="count">
+                      {openThreads(totalThreads.list.threads)}
+                    </span>
+                  )}
+                </button>
               </div>
               <span className="comparison-range">
                 <code>{short(comparison.base)}</code>
@@ -866,7 +934,19 @@ function App() {
                 </div>
               </div>
             )}
-            {mode === "conversations" ? (
+            {mode === "comments" && totalTarget ? (
+              <CommentsPanel
+                list={totalThreads.list}
+                error={totalThreads.error}
+                target={totalTarget}
+                files={comparison.files}
+                onChanged={totalThreads.reload}
+                onOpenFile={(path) => {
+                  setMode("total");
+                  setPendingPath(path);
+                }}
+              />
+            ) : mode === "conversations" ? (
               <Conversations
                 list={conversations}
                 error={conversationsError}
@@ -1038,6 +1118,15 @@ function App() {
                           >
                             <FileCode2 size={15} />
                             <span>{file.path}</span>
+                            {!!openThreads(activeByFile.get(file.path)) && (
+                              <span
+                                className="comment-count"
+                                title="Open comment threads"
+                              >
+                                <MessageSquare size={11} />
+                                {openThreads(activeByFile.get(file.path))}
+                              </span>
+                            )}
                             {reviewed.has(file.path) ? (
                               <Check size={13} className="added" />
                             ) : (
@@ -1052,7 +1141,7 @@ function App() {
                       </nav>
                       <div className="sidebar-footnote">
                         <span className="connection-dot" />
-                        Read-only · Nothing leaves your machine
+                        Files untouched · Nothing leaves your machine
                       </div>
                     </aside>
                     <section
@@ -1076,6 +1165,18 @@ function App() {
                             layout={diffLayout}
                             viewed={reviewed.has(file.path)}
                             onViewed={() => toggleViewed(file.path)}
+                            threads={activeByFile.get(file.path) ?? []}
+                            author={author}
+                            commentTarget={{
+                              repository: active.repository,
+                              base: active.base,
+                              head: active.head,
+                              branch:
+                                mode === "total"
+                                  ? comparison.range?.branch
+                                  : undefined,
+                            }}
+                            onCommentsChanged={activeThreads.reload}
                           />
                         ))}
                       {!visibleFiles.length && (
@@ -1138,8 +1239,8 @@ function App() {
                 One commit at a time
               </span>
               <span>
-                <Check size={16} />
-                Always read-only
+                <MessagesSquare size={16} />
+                Comments that stay local
               </span>
             </div>
             {loading && (
@@ -1221,6 +1322,8 @@ function CodeCell({
   changed,
   language,
   lineNumbers,
+  selected,
+  onComment,
 }: {
   line?: Line;
   other?: Line;
@@ -1228,6 +1331,9 @@ function CodeCell({
   changed: boolean;
   language?: string;
   lineNumbers?: { old?: number; new?: number };
+  selected?: boolean;
+  // Start a comment on this line; extend is set to widen an open draft.
+  onComment?: (extend: boolean) => void;
 }) {
   const kind = line
     ? changed
@@ -1280,7 +1386,18 @@ function CodeCell({
           {line?.number}
         </td>
       )}
-      <td className={`code-cell ${kind}`}>
+      <td className={`code-cell ${kind}${selected ? " selected" : ""}`}>
+        {line && onComment && (
+          <button
+            type="button"
+            className="add-comment"
+            aria-label={`Comment on ${side === "left" ? "old" : "new"} line ${line.number}`}
+            title="Comment on this line (shift-click to extend a selection)"
+            onClick={(e) => onComment(e.shiftKey)}
+          >
+            <Plus size={12} />
+          </button>
+        )}
         <span className="line-sign" aria-hidden="true">
           {changed && line ? (side === "left" ? "−" : "+") : " "}
         </span>
@@ -1314,6 +1431,27 @@ function CodeCell({
     </>
   );
 }
+// Where an open comment draft sits: one side's line range.
+interface Draft {
+  side: Side;
+  start: number;
+  end: number;
+}
+const lineKey = (side: Side, line?: number) =>
+  line === undefined ? "" : `${side}:${line}`;
+// Split rows show the old line on the left and the new line on the right.
+const rowKeys = (row: Row) => [
+  lineKey("old", row.left?.number),
+  lineKey("new", row.right?.number),
+];
+// Each part of a split diff between comment threads, so threads can span
+// both halves while the halves keep scrolling together.
+interface SplitSegment {
+  heading?: string;
+  rows: Row[];
+  after?: React.ReactNode;
+}
+
 function FileCard({
   file,
   comparison,
@@ -1324,6 +1462,10 @@ function FileCard({
   layout,
   viewed,
   onViewed,
+  threads,
+  author,
+  commentTarget,
+  onCommentsChanged,
 }: {
   file: ChangedFile;
   comparison: Comparison;
@@ -1334,15 +1476,19 @@ function FileCard({
   layout: DiffLayout;
   viewed: boolean;
   onViewed: () => void;
+  threads: Thread[];
+  author: string;
+  commentTarget: CommentTarget;
+  onCommentsChanged: () => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [visible, setVisible] = useState(false);
   const [patch, setPatch] = useState<Patch>();
   const [error, setError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [draft, setDraft] = useState<Draft>();
+  const [fileDraft, setFileDraft] = useState(false);
   const element = useRef<HTMLElement>(null);
-  const leftScroll = useRef<HTMLDivElement>(null);
-  const rightScroll = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -1390,6 +1536,24 @@ function FileCard({
         : [],
     [hunks, layout],
   );
+  // Threads appear under the last line they cover when that line is shown;
+  // the rest (file comments, outdated threads, lines outside the shown
+  // context) are listed above the diff.
+  const { inline, elsewhere } = useMemo(() => {
+    const shown = new Set(hunks.flatMap((hunk) => hunk.rows.flatMap(rowKeys)));
+    const inline = new Map<string, Thread[]>();
+    const elsewhere: Thread[] = [];
+    for (const thread of threads) {
+      const key =
+        thread.side && thread.placement?.status !== "outdated"
+          ? lineKey(thread.side, thread.placement?.endLine || undefined)
+          : "";
+      if (key && shown.has(key))
+        inline.set(key, [...(inline.get(key) ?? []), thread]);
+      else elsewhere.push(thread);
+    }
+    return { inline, elsewhere };
+  }, [hunks, threads]);
   const language = languages[file.path.split(".").pop() || ""];
   const longestLine = useMemo(
     () =>
@@ -1410,6 +1574,94 @@ function FileCard({
       ),
     [hunks],
   );
+  const commentOn = (side: Side, line: number) => (extend: boolean) =>
+    setDraft(
+      extend && draft?.side === side
+        ? {
+            side,
+            start: Math.min(draft.start, line),
+            end: Math.max(draft.end, line),
+          }
+        : { side, start: line, end: line },
+    );
+  const isSelected = (side: Side, line?: Line) =>
+    !!line &&
+    draft?.side === side &&
+    line.number >= draft.start &&
+    line.number <= draft.end;
+  // The threads and draft that belong under a row with these line keys.
+  function annotations(keys: string[]) {
+    const here = keys.flatMap((key) => (key ? (inline.get(key) ?? []) : []));
+    const drafting = draft && keys.includes(lineKey(draft.side, draft.end));
+    if (!here.length && !drafting) return null;
+    return (
+      <div className="line-annotations">
+        {here.map((thread) => (
+          <ThreadCard
+            key={thread.id}
+            thread={thread}
+            author={author}
+            onChanged={onCommentsChanged}
+          />
+        ))}
+        {drafting && (
+          <div className="thread-card draft">
+            <div className="thread-context">
+              <span className="thread-location">
+                New comment on{" "}
+                {lineLabel({
+                  path: file.path,
+                  side: draft.side,
+                  startLine: draft.start,
+                  endLine: draft.end,
+                } as Thread)}
+              </span>
+            </div>
+            <Composer
+              placeholder="Leave a comment… (shift-click + to widen the selection)"
+              submitLabel="Comment"
+              onCancel={() => setDraft(undefined)}
+              onSubmit={async (body) => {
+                await createThread(commentTarget, author, body, {
+                  path: draft.side === "old" ? file.oldPath : file.path,
+                  side: draft.side,
+                  startLine: draft.start,
+                  endLine: draft.end,
+                });
+                setDraft(undefined);
+                onCommentsChanged();
+              }}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+  const splitSegments: SplitSegment[] = [];
+  if (layout === "split" && !wrap) {
+    for (const hunk of hunks) {
+      let segment: SplitSegment = { heading: hunk.heading, rows: [] };
+      for (const row of hunk.rows) {
+        segment.rows.push(row);
+        const after = annotations(rowKeys(row));
+        if (after) {
+          segment.after = after;
+          splitSegments.push(segment);
+          segment = { rows: [] };
+        }
+      }
+      if (segment.rows.length || segment.heading) splitSegments.push(segment);
+    }
+  }
+  function syncScroll(event: React.UIEvent<HTMLDivElement>) {
+    const x = event.currentTarget.scrollLeft;
+    element.current
+      ?.querySelectorAll<HTMLElement>(".diff-half")
+      .forEach((half) => {
+        if (half !== event.currentTarget && half.scrollLeft !== x)
+          half.scrollLeft = x;
+      });
+  }
   return (
     <article
       ref={element}
@@ -1436,6 +1688,17 @@ function FileCard({
           {statusNames[file.status] || file.status}
         </span>
         <Stats additions={file.additions} deletions={file.deletions} />
+        <button
+          className="icon-button file-comment-button"
+          aria-label={`Comment on ${file.path}`}
+          title="Comment on this file"
+          onClick={() => {
+            setCollapsed(false);
+            setFileDraft(true);
+          }}
+        >
+          <MessageSquarePlus size={15} />
+        </button>
         <label className="viewed-checkbox">
           <input type="checkbox" checked={viewed} onChange={onViewed} />
           <span>Viewed</span>
@@ -1450,6 +1713,37 @@ function FileCard({
                 File mode changed: {file.oldMode} → {file.newMode}
               </div>
             )}
+          {(!!elsewhere.length || fileDraft) && (
+            <div className="file-threads">
+              {elsewhere.map((thread) => (
+                <ThreadCard
+                  key={thread.id}
+                  thread={thread}
+                  author={author}
+                  onChanged={onCommentsChanged}
+                  showSnippet
+                />
+              ))}
+              {fileDraft && (
+                <div className="thread-card draft">
+                  <Composer
+                    placeholder={`Comment on ${file.path}…`}
+                    submitLabel="Comment"
+                    onCancel={() => setFileDraft(false)}
+                    onSubmit={async (body) => {
+                      const deleted = file.status === "D";
+                      await createThread(commentTarget, author, body, {
+                        path: deleted ? file.oldPath : file.path,
+                        side: deleted ? "old" : "new",
+                      });
+                      setFileDraft(false);
+                      onCommentsChanged();
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
           {error ? (
             <div className="patch-message error-message">
               {error}
@@ -1498,21 +1792,40 @@ function FileCard({
                       <tr className="hunk-header">
                         <td colSpan={3}>{hunk.heading}</td>
                       </tr>
-                      {hunk.rows.map((row, rowIndex) => (
-                        <tr key={rowIndex}>
-                          <CodeCell
-                            line={row.line}
-                            other={row.other}
-                            side={row.kind === "deletion" ? "left" : "right"}
-                            changed={row.kind !== "context"}
-                            language={language}
-                            lineNumbers={{
-                              old: row.oldNumber,
-                              new: row.newNumber,
-                            }}
-                          />
-                        </tr>
-                      ))}
+                      {hunk.rows.map((row, rowIndex) => {
+                        const side: Side =
+                          row.kind === "deletion" ? "old" : "new";
+                        // A context line has both numbers; threads on
+                        // either side of it belong under it.
+                        const after = annotations([
+                          lineKey("old", row.oldNumber),
+                          lineKey("new", row.newNumber),
+                        ]);
+                        return (
+                          <React.Fragment key={rowIndex}>
+                            <tr>
+                              <CodeCell
+                                line={row.line}
+                                other={row.other}
+                                side={side === "old" ? "left" : "right"}
+                                changed={row.kind !== "context"}
+                                language={language}
+                                lineNumbers={{
+                                  old: row.oldNumber,
+                                  new: row.newNumber,
+                                }}
+                                selected={isSelected(side, row.line)}
+                                onComment={commentOn(side, row.line.number)}
+                              />
+                            </tr>
+                            {after && (
+                              <tr className="annotation-row">
+                                <td colSpan={3}>{after}</td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                     </React.Fragment>
                   ))}
                 </tbody>
@@ -1520,71 +1833,81 @@ function FileCard({
             </div>
           ) : hunks.length && !wrap ? (
             <div
-              className="split-diff"
+              className="split-diff-segments"
               role="group"
               aria-label={`Side-by-side diff for ${file.path}`}
             >
-              {(["left", "right"] as const).map((side) => (
-                <div
-                  className="diff-half"
-                  key={side}
-                  ref={side === "left" ? leftScroll : rightScroll}
-                  tabIndex={0}
-                  aria-label={`${side === "left" ? "Before" : "After"} code, scroll horizontally for long lines`}
-                  onScroll={(event) => {
-                    const other =
-                      side === "left"
-                        ? rightScroll.current
-                        : leftScroll.current;
-                    if (
-                      other &&
-                      other.scrollLeft !== event.currentTarget.scrollLeft
-                    )
-                      other.scrollLeft = event.currentTarget.scrollLeft;
-                  }}
-                >
-                  <table
-                    className="diff-table"
-                    style={{ minWidth: Math.max(310, longestLine * 7.2 + 76) }}
-                  >
-                    <colgroup>
-                      <col className="number-col" />
-                      <col />
-                    </colgroup>
-                    <thead>
-                      <tr>
-                        <th colSpan={2}>
-                          {side === "left" ? "Before" : "After"}{" "}
-                          <code>
-                            {side === "left"
-                              ? baseLabel(comparison)
-                              : headLabel}
-                          </code>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {hunks.map((hunk, index) => (
-                        <React.Fragment key={index}>
-                          <tr className="hunk-header">
-                            <td colSpan={2}>{hunk.heading}</td>
-                          </tr>
-                          {hunk.rows.map((row, rowIndex) => (
-                            <tr key={rowIndex}>
-                              <CodeCell
-                                line={row[side]}
-                                other={row[side === "left" ? "right" : "left"]}
-                                side={side}
-                                changed={row.kind === "change"}
-                                language={language}
-                              />
-                            </tr>
-                          ))}
-                        </React.Fragment>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+              {splitSegments.map((segment, index) => (
+                <React.Fragment key={index}>
+                  <div className="split-diff">
+                    {(["left", "right"] as const).map((side) => (
+                      <div
+                        className="diff-half"
+                        key={side}
+                        tabIndex={index === 0 ? 0 : -1}
+                        aria-label={`${side === "left" ? "Before" : "After"} code, scroll horizontally for long lines`}
+                        onScroll={syncScroll}
+                      >
+                        <table
+                          className="diff-table"
+                          style={{
+                            minWidth: Math.max(310, longestLine * 7.2 + 76),
+                          }}
+                        >
+                          <colgroup>
+                            <col className="number-col" />
+                            <col />
+                          </colgroup>
+                          {index === 0 && (
+                            <thead>
+                              <tr>
+                                <th colSpan={2}>
+                                  {side === "left" ? "Before" : "After"}{" "}
+                                  <code>
+                                    {side === "left"
+                                      ? baseLabel(comparison)
+                                      : headLabel}
+                                  </code>
+                                </th>
+                              </tr>
+                            </thead>
+                          )}
+                          <tbody>
+                            {segment.heading && (
+                              <tr className="hunk-header">
+                                <td colSpan={2}>{segment.heading}</td>
+                              </tr>
+                            )}
+                            {segment.rows.map((row, rowIndex) => {
+                              const line = row[side];
+                              const lineSide = side === "left" ? "old" : "new";
+                              return (
+                                <tr key={rowIndex}>
+                                  <CodeCell
+                                    line={line}
+                                    other={
+                                      row[side === "left" ? "right" : "left"]
+                                    }
+                                    side={side}
+                                    changed={row.kind === "change"}
+                                    language={language}
+                                    selected={isSelected(lineSide, line)}
+                                    onComment={
+                                      line && commentOn(lineSide, line.number)
+                                    }
+                                  />
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
+                  </div>
+                  {segment.after && (
+                    <div className="split-annotation">{segment.after}</div>
+                  )}
+                </React.Fragment>
               ))}
             </div>
           ) : hunks.length ? (
@@ -1615,24 +1938,43 @@ function FileCard({
                       <tr className="hunk-header">
                         <td colSpan={4}>{hunk.heading}</td>
                       </tr>
-                      {hunk.rows.map((row, rowIndex) => (
-                        <tr key={rowIndex}>
-                          <CodeCell
-                            line={row.left}
-                            other={row.right}
-                            side="left"
-                            changed={row.kind === "change"}
-                            language={language}
-                          />
-                          <CodeCell
-                            line={row.right}
-                            other={row.left}
-                            side="right"
-                            changed={row.kind === "change"}
-                            language={language}
-                          />
-                        </tr>
-                      ))}
+                      {hunk.rows.map((row, rowIndex) => {
+                        const after = annotations(rowKeys(row));
+                        return (
+                          <React.Fragment key={rowIndex}>
+                            <tr>
+                              <CodeCell
+                                line={row.left}
+                                other={row.right}
+                                side="left"
+                                changed={row.kind === "change"}
+                                language={language}
+                                selected={isSelected("old", row.left)}
+                                onComment={
+                                  row.left && commentOn("old", row.left.number)
+                                }
+                              />
+                              <CodeCell
+                                line={row.right}
+                                other={row.left}
+                                side="right"
+                                changed={row.kind === "change"}
+                                language={language}
+                                selected={isSelected("new", row.right)}
+                                onComment={
+                                  row.right &&
+                                  commentOn("new", row.right.number)
+                                }
+                              />
+                            </tr>
+                            {after && (
+                              <tr className="annotation-row">
+                                <td colSpan={4}>{after}</td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                     </React.Fragment>
                   ))}
                 </tbody>

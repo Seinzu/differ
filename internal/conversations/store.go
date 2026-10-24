@@ -1,5 +1,6 @@
 // Package conversations records prompts and responses from Claude Code
-// sessions in a SQLite database and links them to commits.
+// sessions in a SQLite database and links them to commits. The same database
+// holds review comments on diffs.
 package conversations
 
 import (
@@ -82,6 +83,35 @@ var migrations = []string{
 		rewritten_at TEXT NOT NULL,
 		PRIMARY KEY (git_dir, old_sha)
 	);`,
+	`CREATE TABLE threads (
+		id INTEGER PRIMARY KEY,
+		git_dir TEXT NOT NULL,
+		path TEXT NOT NULL,
+		side TEXT NOT NULL,
+		start_line INTEGER NOT NULL,
+		end_line INTEGER NOT NULL,
+		blob TEXT NOT NULL,
+		snippet TEXT NOT NULL,
+		context_before TEXT NOT NULL,
+		context_after TEXT NOT NULL,
+		base TEXT NOT NULL,
+		head TEXT NOT NULL,
+		branch TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		resolved_at TEXT,
+		resolved_by TEXT NOT NULL DEFAULT ''
+	);
+	CREATE INDEX threads_by_repository ON threads (git_dir, path);
+	CREATE TABLE comments (
+		id INTEGER PRIMARY KEY,
+		thread_id INTEGER NOT NULL,
+		author TEXT NOT NULL,
+		author_kind TEXT NOT NULL,
+		body TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		edited_at TEXT
+	);
+	CREATE INDEX comments_by_thread ON comments (thread_id, id);`,
 }
 
 // Open opens the database, creating it when create is set. Otherwise a
@@ -94,9 +124,11 @@ func Open(path string, create bool) (*Store, error) {
 	} else if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	// Concurrent sessions each run hooks; WAL and a busy timeout let them
-	// write without failing on each other's locks.
-	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	// Concurrent sessions each run hooks, and the server handles requests in
+	// parallel. WAL and a busy timeout let them write without failing on each
+	// other's locks; immediate transactions take the write lock up front, since
+	// a read lock cannot wait to be upgraded.
+	dsn := "file:" + (&url.URL{Path: path}).EscapedPath() + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -112,6 +144,14 @@ func Open(path string, create bool) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate() error {
+	// Most opens find the database current and need no write lock.
+	var current int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&current); err != nil {
+		return err
+	}
+	if current == len(migrations) {
+		return nil
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

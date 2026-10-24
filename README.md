@@ -1,6 +1,6 @@
 # Differ
 
-A local, read-only code review tool. A Go server hosts a React + TypeScript application with GitHub-style side-by-side diffs.
+A local code review tool that never changes your repository. A Go server hosts a React + TypeScript application with GitHub-style side-by-side diffs.
 
 ## Run
 
@@ -52,9 +52,22 @@ The current selection is kept in the URL, so **Copy local link** reopens the sam
 - Stats describe the original comparison, even when whitespace is ignored. Binary files and submodule changes show metadata instead of a text preview.
 - Files load as they approach the viewport. Text previews are limited to 2 MB per blob, 4 MB per patch, and 10,000 patch lines. Larger files show an explicit notice. Individual Git commands have a 30-second timeout and 32 MB output limit.
 
-Git remains the source of truth. Differ does not check out commits, modify files, stage changes, fetch, push, or create commits. To review uncommitted changes, it stages the working tree into a temporary copy of the index and records it as a tree object; your index and files are untouched, and the unreferenced objects are removed by Git's normal garbage collection. Git external diff and text conversion commands are disabled.
+Git remains the source of truth. Apart from writing comments to its own database, Differ does not check out commits, modify files, stage changes, fetch, push, or create commits. To review uncommitted changes, it stages the working tree into a temporary copy of the index and records it as a tree object; your index and files are untouched, and the unreferenced objects are removed by Git's normal garbage collection. Git external diff and text conversion commands are disabled.
 
 The server binds only to loopback addresses and rejects cross-origin API requests and non-local hostnames. It has access to working copies readable by the user running it, and the repository chooser lists folder names (never file contents) the user can read. Local links include the working-copy path and only work on a machine with that path and a running Differ server.
+
+## Review comments
+
+Comment on lines, files, or the whole comparison, then reply and resolve threads as you would on a pull request.
+
+- Hover a line and choose **+** to comment on it; shift-click **+** on another line on the same side to cover a range. The comment button in a file's header comments on the whole file, and the **Comments** tab takes comments on the whole comparison.
+- Threads appear under the last line they cover, in Split and Unified layouts and in total and commit-by-commit review. The **Comments** tab lists every thread on the comparison's files, and the file list counts open threads per file. Resolved threads collapse to one line.
+- A comment is pinned to one side (before or after) of a file and remembers the content of its lines, so it follows the code into other comparisons: in place where the file is unchanged, at the new position (marked **Moved**) when lines were added above it, and marked **Outdated** with its original code once those lines change. Threads on lines outside the shown context are listed above the file's diff.
+- Comments on a whole comparison appear again on the same branch, or for the same two commits.
+- Your comments are signed with your Git `user.name`. Comments written by agents such as Claude are marked **Agent**.
+- Open tabs update as soon as comments change, including comments made from another tab.
+
+Comments are stored in the same SQLite database as captured conversations (below), created on your first comment, and shared by all worktrees of a repository. Nothing is sent anywhere.
 
 ## Claude Code conversations
 
@@ -133,9 +146,12 @@ Run `npm run format:check` to check frontend and workflow formatting locally, or
 ```text
 cmd/differ/       CLI and HTTP server lifecycle
 internal/git/     Read-only Git operations and integration tests
+internal/conversations/  Conversation capture and linking, review comments and their anchoring
 internal/server/  JSON API, local-request boundary, static hosting
 web/src/          React UI, diff renderer, styles, parser tests
 web/embed.go      Built frontend embedded into the Go binary
 ```
 
 API: `GET /api/config`, `GET /api/compare?repo=…&base=…&head=…`, and `GET /api/file?repo=…&base=…&head=…&path=…&context=3&whitespace=show`.
+
+Comments: `GET /api/threads?repo=…&base=…&head=…&branch=…` lists the threads placed in a comparison (without `base` and `head`, every thread in the repository). `POST /api/threads?repo=…` starts one from a JSON body with `base`, `head`, `branch`, `path`, `side` (`old` or `new`), `startLine`, `endLine`, `body`, and optionally `author` and `authorKind` (`user` or `agent`). `POST /api/threads/{id}/comments` replies, `PATCH /api/threads/{id}` with `{"resolved": true, "by": "…"}` resolves or reopens, and `PATCH` or `DELETE /api/comments/{id}` edits or deletes a comment. Writes with a body must send `Content-Type: application/json`, and like every API request they are refused from other origins. `GET /api/events` is a server-sent event stream that announces comment changes.
