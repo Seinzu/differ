@@ -11,33 +11,7 @@ import {
 } from "lucide-react";
 import type { ChangedFile, Side, Thread, ThreadList } from "./types";
 import { api, send } from "./api";
-
-type ServerEvent = { type: string };
-
-// One event stream per tab, shared by every listener. EventSource reconnects
-// by itself; listeners hear "reconnected" so they can catch up.
-let source: EventSource | undefined;
-const listeners = new Set<(event: ServerEvent) => void>();
-function onServerEvent(listener: (event: ServerEvent) => void) {
-  if (!source && typeof EventSource !== "undefined") {
-    let opened = false;
-    source = new EventSource("/api/events");
-    source.onopen = () => {
-      if (opened) listeners.forEach((l) => l({ type: "reconnected" }));
-      opened = true;
-    };
-    source.onmessage = (message) => {
-      try {
-        const event = JSON.parse(message.data) as ServerEvent;
-        listeners.forEach((l) => l(event));
-      } catch {
-        // Ignore events this version does not understand.
-      }
-    };
-  }
-  listeners.add(listener);
-  return () => void listeners.delete(listener);
-}
+import { onServerEvent } from "./events";
 
 export interface CommentTarget {
   repository: string;
