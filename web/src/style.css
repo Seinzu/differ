@@ -752,6 +752,12 @@ main {
 .sidebar-label span {
   letter-spacing: 0;
   font-weight: 450;
+  margin-left: auto;
+}
+.sidebar-label .view-toggle {
+  width: 20px;
+  height: 14px;
+  margin: -1px -4px 0 6px;
 }
 .file-nav {
   width: 100%;
@@ -784,6 +790,43 @@ main {
 }
 .file-nav.active > span:first-of-type {
   color: #2d6549;
+}
+.file-nav > svg {
+  flex-shrink: 0;
+}
+.file-tree .file-nav {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  margin: 1px 0;
+  gap: 6px;
+}
+.dir-nav > span:first-of-type {
+  color: #73818d;
+}
+.dir-count {
+  font-size: 10px;
+  color: #98a2ab;
+}
+.file-nav-name {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.file-name {
+  flex-shrink: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-dir {
+  min-width: 0;
+  color: #98a2ab;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-path-dir {
+  color: #7d8894;
+  font-weight: 450;
 }
 .file-status {
   font: 9px var(--mono);
@@ -1369,11 +1412,14 @@ footer {
     width: 100%;
   }
   .file-sidebar nav {
-    max-height: 160px;
+    max-height: 220px;
     overflow: auto;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0 10px;
+  }
+  .file-sidebar nav.file-tree {
+    display: block;
   }
   .sidebar-label {
     padding-top: 14px;

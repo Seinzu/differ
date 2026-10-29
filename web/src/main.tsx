@@ -16,6 +16,8 @@ import {
   GitCommitHorizontal,
   GitCompareArrows,
   GitMerge,
+  List,
+  ListTree,
   LoaderCircle,
   MessageSquare,
   MessageSquarePlus,
@@ -42,6 +44,8 @@ import type {
 } from "./types";
 import { RepoPicker, rememberRepository } from "./RepoPicker";
 import { Conversations } from "./Conversations";
+import { FileNav, type FileView } from "./FileNav";
+import { buildFileTree, splitPath, treeFiles } from "./fileTree";
 import {
   CommentsPanel,
   Composer,
@@ -170,6 +174,16 @@ function App() {
   const [reviewed, setReviewed] = useState<Set<string>>(new Set());
   const [hideViewed, setHideViewed] = useState(false);
   const [activePath, setActivePath] = useState("");
+  const [fileView, setFileView] = useState<FileView>(() => {
+    try {
+      return localStorage.getItem("differ:file-view") === "list"
+        ? "list"
+        : "tree";
+    } catch {
+      return "tree";
+    }
+  });
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState(false);
   const request = useRef<AbortController | undefined>(undefined);
   const commitRequest = useRef<AbortController | undefined>(undefined);
@@ -351,6 +365,14 @@ function App() {
       // The toggle still works when browser storage is unavailable.
     }
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("differ:file-view", fileView);
+    } catch {
+      // The view toggle still works when browser storage is unavailable.
+    }
+  }, [fileView]);
 
   useEffect(() => {
     try {
@@ -547,11 +569,22 @@ function App() {
     });
   }
   const files = active?.files ?? [];
-  const visibleFiles = files.filter(
+  const filtered = files.filter(
     (file) =>
       file.path.toLowerCase().includes(filter.toLowerCase()) &&
       (!hideViewed || !reviewed.has(file.path)),
   );
+  // Keep the diffs in the same order as the sidebar's tree.
+  const visibleFiles =
+    fileView === "tree" ? treeFiles(buildFileTree(filtered)) : filtered;
+  function toggleDir(path: string) {
+    setCollapsedDirs((previous) => {
+      const next = new Set(previous);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
   const reviewedCount = files.filter((file) => reviewed.has(file.path)).length;
   const canBrowseCommits = !!comparison?.commits.length;
   function navigateTo(path: string) {
@@ -1220,38 +1253,42 @@ function App() {
                       </div>
                       <div className="sidebar-label">
                         FILES CHANGED<span>{visibleFiles.length}</span>
+                        <button
+                          className="icon-button view-toggle"
+                          aria-label={
+                            fileView === "tree"
+                              ? "Show files as a flat list"
+                              : "Show files as a directory tree"
+                          }
+                          title={
+                            fileView === "tree"
+                              ? "Show files as a flat list"
+                              : "Show files as a directory tree"
+                          }
+                          onClick={() =>
+                            setFileView(fileView === "tree" ? "list" : "tree")
+                          }
+                        >
+                          {fileView === "tree" ? (
+                            <List size={13} />
+                          ) : (
+                            <ListTree size={13} />
+                          )}
+                        </button>
                       </div>
-                      <nav aria-label="Changed files">
-                        {visibleFiles.map((file) => (
-                          <button
-                            key={file.path}
-                            className={`file-nav ${activePath === file.path ? "active" : ""}`}
-                            title={file.path}
-                            onClick={() => navigateTo(file.path)}
-                          >
-                            <FileCode2 size={15} />
-                            <span>{file.path}</span>
-                            {!!openThreads(activeByFile.get(file.path)) && (
-                              <span
-                                className="comment-count"
-                                title="Open comment threads"
-                              >
-                                <MessageSquare size={11} />
-                                {openThreads(activeByFile.get(file.path))}
-                              </span>
-                            )}
-                            {reviewed.has(file.path) ? (
-                              <Check size={13} className="added" />
-                            ) : (
-                              <span
-                                className={`file-status status-${file.status}`}
-                              >
-                                {file.status}
-                              </span>
-                            )}
-                          </button>
-                        ))}
-                      </nav>
+                      <FileNav
+                        files={visibleFiles}
+                        view={fileView}
+                        activePath={activePath}
+                        reviewed={reviewed}
+                        openThreadCount={(path) =>
+                          openThreads(activeByFile.get(path))
+                        }
+                        onSelect={navigateTo}
+                        collapsedDirs={collapsedDirs}
+                        onToggleDir={toggleDir}
+                        expandAll={!!filter}
+                      />
                       <div className="sidebar-footnote">
                         <span className="connection-dot" />
                         Files untouched · Nothing leaves your machine
@@ -1829,7 +1866,8 @@ function FileCard({
           {file.oldPath !== file.path && (
             <span className="old-path">{file.oldPath} → </span>
           )}
-          {file.path}
+          <span className="file-path-dir">{splitPath(file.path).dir}</span>
+          {splitPath(file.path).name}
         </span>
         <span className={`status-label status-${file.status}`}>
           {statusNames[file.status] || file.status}
