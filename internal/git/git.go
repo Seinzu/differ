@@ -368,19 +368,9 @@ func (r *Repository) Patch(ctx context.Context, baseRef, headRef, path string, c
 	if err != nil {
 		return nil, err
 	}
-	files, err := r.Files(ctx, base, head)
+	file, err := r.findFile(ctx, base, head, path)
 	if err != nil {
 		return nil, err
-	}
-	var file *File
-	for i := range files {
-		if files[i].Path == path {
-			file = &files[i]
-			break
-		}
-	}
-	if file == nil {
-		return nil, errors.New("File is not part of this comparison")
 	}
 	if file.Binary {
 		return &Patch{Binary: true, Message: "Binary file changed. No text preview available."}, nil
@@ -447,6 +437,59 @@ func (r *Repository) Patch(ctx context.Context, baseRef, headRef, path string, c
 		return &Patch{Binary: true, Message: "Binary file changed. No text preview available."}, nil
 	}
 	return &Patch{Patch: string(out)}, nil
+}
+
+func (r *Repository) findFile(ctx context.Context, base, head, path string) (*File, error) {
+	files, err := r.Files(ctx, base, head)
+	if err != nil {
+		return nil, err
+	}
+	for i := range files {
+		if files[i].Path == path {
+			return &files[i], nil
+		}
+	}
+	return nil, errors.New("File is not part of this comparison")
+}
+
+// Contents holds both versions of a changed text file, so the viewer can
+// reveal unchanged lines around the hunks of its patch.
+type Contents struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+// FileContents returns the old and new text of a file in a comparison. A
+// side where the file does not exist is empty.
+func (r *Repository) FileContents(ctx context.Context, baseRef, headRef, path string) (*Contents, error) {
+	base, err := r.resolveTree(ctx, baseRef)
+	if err != nil {
+		return nil, err
+	}
+	head, err := r.resolveTree(ctx, headRef)
+	if err != nil {
+		return nil, err
+	}
+	file, err := r.findFile(ctx, base, head, path)
+	if err != nil {
+		return nil, err
+	}
+	if file.Binary || file.OldMode == "160000" || file.NewMode == "160000" {
+		return nil, errors.New("File has no text content to show")
+	}
+	var contents Contents
+	for _, side := range []struct {
+		oid  string
+		text *string
+	}{{file.OldOID, &contents.Old}, {file.NewOID, &contents.New}} {
+		if strings.Trim(side.oid, "0") == "" {
+			continue
+		}
+		if *side.text, err = r.Blob(ctx, side.oid); err != nil {
+			return nil, err
+		}
+	}
+	return &contents, nil
 }
 
 // SnapshotFiles is Files for any two snapshots a comparison can name, such as

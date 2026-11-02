@@ -105,6 +105,20 @@ func New(config Config, assets fs.FS) http.Handler {
 		}
 		writeJSON(w, 200, patch)
 	})
+	mux.HandleFunc("GET /api/file/contents", func(w http.ResponseWriter, r *http.Request) {
+		repo, err := git.Open(r.Context(), repository(r, config))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		q := r.URL.Query()
+		contents, err := repo.FileContents(r.Context(), q.Get("base"), q.Get("head"), q.Get("path"))
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, 200, contents)
+	})
 	events := newHub()
 	registerEvents(mux, events)
 	registerComments(mux, config, events)
