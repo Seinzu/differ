@@ -38,6 +38,10 @@ export interface Patch {
   tooLarge: boolean;
   message?: string;
 }
+export interface FileContents {
+  old: string;
+  new: string;
+}
 export interface Config {
   repository: string;
   base: string;

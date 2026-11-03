@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  ArrowDownFromLine,
   ArrowLeft,
   ArrowRight,
+  ArrowUpFromLine,
   ArrowLeftRight,
   Check,
   ChevronDown,
@@ -29,6 +31,7 @@ import {
   RefreshCw,
   Search,
   Settings2,
+  UnfoldVertical,
   X,
 } from "lucide-react";
 import hljs from "highlight.js/lib/common";
@@ -37,6 +40,7 @@ import type {
   Comparison,
   Config,
   ConversationList,
+  FileContents,
   Patch,
   RepoInfo,
   Side,
@@ -61,8 +65,14 @@ import { api, send } from "./api";
 import { onServerEvent, tabId } from "./events";
 import {
   changedSpan,
+  expandHunks,
+  expandStep,
+  fileLines,
   parsePatch,
   toUnifiedRows,
+  type ExpandedHunk,
+  type Expansions,
+  type Gap,
   type Line,
   type Row,
 } from "./diff";
@@ -1610,9 +1620,84 @@ const rowKeys = (row: Row) => [
 // Each part of a split diff between comment threads, so threads can span
 // both halves while the halves keep scrolling together.
 interface SplitSegment {
-  heading?: string;
+  block?: ExpandedHunk;
   rows: Row[];
   after?: React.ReactNode;
+}
+
+type ExpandDirection = "up" | "down" | "all";
+// The row above each block of a diff: its @@ heading, and buttons that reveal
+// the unchanged lines hidden above it.
+function HunkHeader({
+  block,
+  colSpan,
+  onExpand,
+  loading,
+}: {
+  block: ExpandedHunk;
+  colSpan: number;
+  // Left out where another column already shows the buttons.
+  onExpand?: (gap: Gap, direction: ExpandDirection) => void;
+  loading?: boolean;
+}) {
+  const gap = block.gap;
+  const lines = (n: number) => `${n} line${n === 1 ? "" : "s"}`;
+  const step = Math.min(expandStep, gap?.hidden ?? expandStep);
+  const buttons: [ExpandDirection, string, React.ReactNode][] = [];
+  if (gap && onExpand) {
+    if (
+      gap.hidden !== undefined &&
+      gap.hidden <= expandStep &&
+      gap.up &&
+      gap.down
+    )
+      buttons.push([
+        "all",
+        `Show ${lines(gap.hidden)} hidden here`,
+        <UnfoldVertical size={14} />,
+      ]);
+    else {
+      if (gap.down)
+        buttons.push([
+          "down",
+          `Show ${lines(step)} below`,
+          <ArrowDownFromLine size={14} />,
+        ]);
+      if (gap.up)
+        buttons.push([
+          "up",
+          `Show ${lines(step)} above`,
+          <ArrowUpFromLine size={14} />,
+        ]);
+    }
+  }
+  return (
+    <tr className={`hunk-header${gap ? " expandable" : ""}`}>
+      <td colSpan={colSpan}>
+        {!!buttons.length && (
+          <span className="expand-controls">
+            {buttons.map(([direction, label, icon]) => (
+              <button
+                key={direction}
+                type="button"
+                className="expand-button"
+                aria-label={label}
+                title={label}
+                disabled={loading}
+                onClick={() => onExpand!(gap!, direction)}
+              >
+                {icon}
+              </button>
+            ))}
+          </span>
+        )}
+        <span className="hunk-heading">
+          {block.heading ||
+            (gap?.hidden !== undefined ? `${lines(gap.hidden)} hidden` : "")}
+        </span>
+      </td>
+    </tr>
+  );
 }
 
 function FileCard({
@@ -1656,6 +1741,12 @@ function FileCard({
   const [retry, setRetry] = useState(0);
   const [draft, setDraft] = useState<Draft>();
   const [fileDraft, setFileDraft] = useState(false);
+  // Unchanged lines revealed around the hunks, and the file text they come
+  // from, which is loaded the first time a gap is opened.
+  const [expansions, setExpansions] = useState<Expansions>({});
+  const [contents, setContents] = useState<{ old: string[]; new: string[] }>();
+  const [contentsLoading, setContentsLoading] = useState(false);
+  const [contentsError, setContentsError] = useState("");
   const element = useRef<HTMLElement>(null);
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -1694,6 +1785,43 @@ function FileCard({
     return () => controller.abort();
   }, [visible, comparison, file.path, context, ignoreWhitespace, retry]);
   useEffect(() => {
+    setContents(undefined);
+    setContentsError("");
+  }, [comparison, file.path]);
+  // Gaps are numbered by hunk, so a new patch starts collapsed again.
+  useEffect(() => setExpansions({}), [patch]);
+  async function expand(gap: Gap, direction: ExpandDirection) {
+    if (!contents) {
+      setContentsLoading(true);
+      setContentsError("");
+      try {
+        const text = await api<FileContents>("file/contents", {
+          repo: comparison.repository,
+          base: comparison.base,
+          head: comparison.head,
+          path: file.path,
+        });
+        setContents({ old: fileLines(text.old), new: fileLines(text.new) });
+      } catch (e) {
+        setContentsError((e as Error).message);
+        return;
+      } finally {
+        setContentsLoading(false);
+      }
+    }
+    setExpansions((current) => {
+      const shown = current[gap.index] ?? { top: 0, bottom: 0 };
+      const all = direction === "all" ? Infinity : 0;
+      return {
+        ...current,
+        [gap.index]: {
+          top: shown.top + (direction === "down" ? expandStep : all),
+          bottom: shown.bottom + (direction === "up" ? expandStep : all),
+        },
+      };
+    });
+  }
+  useEffect(() => {
     if (focus) setVisible(true);
   }, [focus]);
   useEffect(() => {
@@ -1709,12 +1837,30 @@ function FileCard({
     }
     onFocused();
   }, [focus, patch, layout]);
-  const hunks = useMemo(() => parsePatch(patch?.patch ?? ""), [patch]);
+  const parsed = useMemo(() => parsePatch(patch?.patch ?? ""), [patch]);
+  // Added and deleted files show every line; otherwise a missing final
+  // newline also marks the end of the file.
+  const endOfFile =
+    file.status === "A" ||
+    file.status === "D" ||
+    !!parsed.at(-1)?.rows.at(-1)?.right?.noNewline;
+  const hunks = useMemo(
+    () => expandHunks(parsed, expansions, contents, endOfFile),
+    [parsed, expansions, contents, endOfFile],
+  );
+  const header = (block: ExpandedHunk, colSpan: number, controls = true) => (
+    <HunkHeader
+      block={block}
+      colSpan={colSpan}
+      onExpand={controls ? expand : undefined}
+      loading={contentsLoading}
+    />
+  );
   const unifiedHunks = useMemo(
     () =>
       layout === "unified"
         ? hunks.map((hunk) => ({
-            heading: hunk.heading,
+            block: hunk,
             rows: toUnifiedRows(hunk.rows),
           }))
         : [],
@@ -1824,7 +1970,7 @@ function FileCard({
   const splitSegments: SplitSegment[] = [];
   if (layout === "split" && !wrap) {
     for (const hunk of hunks) {
-      let segment: SplitSegment = { heading: hunk.heading, rows: [] };
+      let segment: SplitSegment = { block: hunk, rows: [] };
       for (const row of hunk.rows) {
         segment.rows.push(row);
         const after = annotations(rowKeys(row));
@@ -1834,7 +1980,7 @@ function FileCard({
           segment = { rows: [] };
         }
       }
-      if (segment.rows.length || segment.heading) splitSegments.push(segment);
+      if (segment.rows.length || segment.block) splitSegments.push(segment);
     }
   }
   function syncScroll(event: React.UIEvent<HTMLDivElement>) {
@@ -1929,6 +2075,11 @@ function FileCard({
               )}
             </div>
           )}
+          {contentsError && (
+            <div className="patch-message error-message">
+              Could not load more lines: {contentsError}
+            </div>
+          )}
           {error ? (
             <div className="patch-message error-message">
               {error}
@@ -1974,9 +2125,7 @@ function FileCard({
                 <tbody>
                   {unifiedHunks.map((hunk, index) => (
                     <React.Fragment key={index}>
-                      <tr className="hunk-header">
-                        <td colSpan={3}>{hunk.heading}</td>
-                      </tr>
+                      {header(hunk.block, 3)}
                       {hunk.rows.map((row, rowIndex) => {
                         const side: Side =
                           row.kind === "deletion" ? "old" : "new";
@@ -2058,11 +2207,8 @@ function FileCard({
                             </thead>
                           )}
                           <tbody>
-                            {segment.heading && (
-                              <tr className="hunk-header">
-                                <td colSpan={2}>{segment.heading}</td>
-                              </tr>
-                            )}
+                            {segment.block &&
+                              header(segment.block, 2, side === "left")}
                             {segment.rows.map((row, rowIndex) => {
                               const line = row[side];
                               const lineSide = side === "left" ? "old" : "new";
@@ -2120,9 +2266,7 @@ function FileCard({
                 <tbody>
                   {hunks.map((hunk, index) => (
                     <React.Fragment key={index}>
-                      <tr className="hunk-header">
-                        <td colSpan={4}>{hunk.heading}</td>
-                      </tr>
+                      {header(hunk, 4)}
                       {hunk.rows.map((row, rowIndex) => {
                         const after = annotations(rowKeys(row));
                         return (

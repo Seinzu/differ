@@ -1069,6 +1069,42 @@ main {
   border-top: 1px solid #e6edf4;
   border-bottom: 1px solid #e6edf4;
 }
+.hunk-header.expandable td {
+  position: relative;
+  height: 26px;
+  padding-left: 52px;
+  vertical-align: middle;
+}
+.expand-controls {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: flex;
+}
+.expand-button {
+  width: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-right: 1px solid #e6edf4;
+  background: #dbe9f9;
+  color: #4b6584;
+  cursor: pointer;
+}
+.expand-controls .expand-button:only-child {
+  width: 42px;
+}
+.expand-button:hover:not(:disabled),
+.expand-button:focus-visible {
+  background: var(--blue);
+  color: #fff;
+  outline: none;
+}
+.expand-button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
 .wrap-lines .code-cell,
 .wrap-lines .code-cell code {
   white-space: pre-wrap;

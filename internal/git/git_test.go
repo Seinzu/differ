@@ -191,3 +191,30 @@ func TestRootCommitFromUnrelatedMerge(t *testing.T) {
 		t.Fatalf("root patch: %+v %v", p, err)
 	}
 }
+
+func TestFileContents(t *testing.T) {
+	dir, repo, base := fixture(t)
+	body := strings.Repeat("// filler\n", 20)
+	write(t, dir, "main.go", "package main\n"+body)
+	base = commit(t, dir, "Longer")
+	gitCmd(t, dir, "mv", "main.go", "app.go")
+	write(t, dir, "app.go", "package app\n"+body)
+	write(t, dir, "new.txt", "fresh\n")
+	write(t, dir, "binary.dat", "\x00\x01\x02")
+	head := commit(t, dir, "Rename, edit and add")
+	ctx := context.Background()
+	renamed, err := repo.FileContents(ctx, base, head, "app.go")
+	if err != nil || renamed.Old != "package main\n"+body || renamed.New != "package app\n"+body {
+		t.Fatalf("renamed: %+v %v", renamed, err)
+	}
+	added, err := repo.FileContents(ctx, base, head, "new.txt")
+	if err != nil || added.Old != "" || added.New != "fresh\n" {
+		t.Fatalf("added: %+v %v", added, err)
+	}
+	if _, err := repo.FileContents(ctx, base, head, "binary.dat"); err == nil {
+		t.Fatal("returned binary content")
+	}
+	if _, err := repo.FileContents(ctx, base, head, "../../etc/passwd"); err == nil {
+		t.Fatal("accepted path outside comparison")
+	}
+}
